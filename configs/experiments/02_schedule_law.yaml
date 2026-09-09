@@ -1,0 +1,9 @@
+extends: ../base_llm.yaml
+study:
+  name: exp02_schedule_law
+  seeds: [11, 23, 47]
+  condition_generator:
+    kind: schedule_bank
+    count: 40
+    seed: 20260906
+

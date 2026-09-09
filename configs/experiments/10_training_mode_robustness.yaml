@@ -1,0 +1,27 @@
+extends: ../base_llm.yaml
+study:
+  name: exp10_training_mode_robustness
+  calibration_file: results/llm/schedule_law.json
+  seeds: [11, 23, 47]
+  conditions:
+    - name: refit_uniform
+      schedule: {kind: uniform}
+      overrides: {training: {mode: refit_full}}
+    - name: refit_selected_bad
+      schedule: {kind: selected_worst, file: results/llm/selected_confirmation_schedule.json, fallback_kind: front_loaded}
+      overrides: {training: {mode: refit_full}}
+    - name: refit_theory
+      schedule: {kind: theory_optimized}
+      overrides: {training: {mode: refit_full}}
+    - name: continual_uniform
+      schedule: {kind: uniform}
+      overrides: {training: {mode: continual_new}}
+    - name: continual_selected_bad
+      schedule: {kind: selected_worst, file: results/llm/selected_confirmation_schedule.json, fallback_kind: front_loaded}
+      overrides: {training: {mode: continual_new}}
+    - name: continual_theory
+      schedule: {kind: theory_optimized}
+      overrides: {training: {mode: continual_new}}
+    - name: continual_full_theory
+      schedule: {kind: theory_optimized}
+      overrides: {training: {mode: continual_full}}

@@ -1,0 +1,12 @@
+extends: ../base_llm.yaml
+evaluation:
+  monitor_every_round: true
+study:
+  name: exp05_capability_erosion
+  calibration_file: results/llm/schedule_law.json
+  seeds: [11, 23, 47, 71, 101]
+  conditions:
+    - {name: all_synthetic, schedule: {kind: all_synthetic, batch_per_round: 512}}
+    - {name: uniform, schedule: {kind: uniform}}
+    - {name: fixed_original_real, schedule: {kind: initial_only}}
+    - {name: theory_optimized, schedule: {kind: theory_optimized}}

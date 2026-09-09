@@ -1,0 +1,20 @@
+extends: ../base_llm.yaml
+study:
+  name: exp01_same_budget
+  seeds: [11, 23, 47, 71, 101]
+  conditions:
+    - {name: uniform, schedule: {kind: uniform}}
+    - {name: front_loaded, schedule: {kind: front_loaded, decay: 0.8}}
+    - {name: back_loaded, schedule: {kind: back_loaded, growth: 0.8}}
+    - {name: periodic, schedule: {kind: periodic, every: 3}}
+    - {name: decaying, schedule: {kind: decaying, power: 1.0}}
+    - {name: growing, schedule: {kind: growing, power: 1.0}}
+    - {name: bursty, schedule: {kind: bursty, seed: 20260906, concentration: 0.2}}
+    - {name: theory_optimized, schedule: {kind: theory_optimized}}
+    # The all-real upper reference uses every held-in APPS training item at most once.
+    - {name: all_real, schedule: {kind: all_real, batch_per_round: 400}}
+    - {name: all_synthetic, schedule: {kind: all_synthetic, batch_per_round: 512}}
+    - {name: fixed_original_real, schedule: {kind: initial_only}}
+    - name: static_synthetic_pool
+      schedule: {kind: uniform}
+      overrides: {synthetic: {strategy: static}}

@@ -1,0 +1,34 @@
+extends: ../base_llm.yaml
+study:
+  name: exp03_grounding_controller
+  calibration_file: results/llm/schedule_law.json
+  seeds: [11, 23, 47, 71, 101]
+  conditions:
+    - {name: uniform_b256, schedule: {kind: uniform, total_real: 256}}
+    - {name: periodic_b256, schedule: {kind: periodic, total_real: 256, every: 3}}
+    - {name: front_b256, schedule: {kind: front_loaded, total_real: 256, decay: 0.8}}
+    - {name: back_b256, schedule: {kind: back_loaded, total_real: 256, growth: 0.8}}
+    - {name: random_b256, schedule: {kind: bursty, total_real: 256, seed: 20260906, concentration: 0.2}}
+    - {name: theory_b256, schedule: {kind: theory_optimized, total_real: 256}}
+    - {name: uniform_b512, schedule: {kind: uniform, total_real: 512}}
+    - {name: periodic_b512, schedule: {kind: periodic, total_real: 512, every: 3}}
+    - {name: front_b512, schedule: {kind: front_loaded, total_real: 512, decay: 0.8}}
+    - {name: back_b512, schedule: {kind: back_loaded, total_real: 512, growth: 0.8}}
+    - {name: random_b512, schedule: {kind: bursty, total_real: 512, seed: 20260906, concentration: 0.2}}
+    - {name: theory_b512, schedule: {kind: theory_optimized, total_real: 512}}
+    - {name: uniform_b768, schedule: {kind: uniform, total_real: 768}}
+    - {name: periodic_b768, schedule: {kind: periodic, total_real: 768, every: 3}}
+    - {name: front_b768, schedule: {kind: front_loaded, total_real: 768, decay: 0.8}}
+    - {name: back_b768, schedule: {kind: back_loaded, total_real: 768, growth: 0.8}}
+    - {name: random_b768, schedule: {kind: bursty, total_real: 768, seed: 20260906, concentration: 0.2}}
+    - {name: theory_b768, schedule: {kind: theory_optimized, total_real: 768}}
+    - {name: uniform_b1024, schedule: {kind: uniform, total_real: 1024}}
+    - {name: periodic_b1024, schedule: {kind: periodic, total_real: 1024, every: 3}}
+    - {name: front_b1024, schedule: {kind: front_loaded, total_real: 1024, decay: 0.8}}
+    - {name: back_b1024, schedule: {kind: back_loaded, total_real: 1024, growth: 0.8}}
+    - {name: random_b1024, schedule: {kind: bursty, total_real: 1024, seed: 20260906, concentration: 0.2}}
+    - {name: theory_b1024, schedule: {kind: theory_optimized, total_real: 1024}}
+    - name: reactive_cap1024
+      schedule: {kind: uniform, total_real: 1024}
+      overrides:
+        policy: {kind: reactive, threshold: 0.55, chunk: 128}

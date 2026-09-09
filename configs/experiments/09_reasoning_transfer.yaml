@@ -1,0 +1,16 @@
+extends: ../base_llm.yaml
+model:
+  name: Qwen/Qwen2.5-0.5B-Instruct
+training:
+  domain: math
+evaluation:
+  benchmarks: [gsm8k]
+  code_execution: disabled
+study:
+  name: exp09_reasoning_transfer
+  calibration_file: results/llm/schedule_law.json
+  seeds: [11, 23, 47, 71, 101]
+  conditions:
+    - {name: uniform, schedule: {kind: uniform}}
+    - {name: selected_bad, schedule: {kind: selected_worst, file: results/llm/selected_confirmation_schedule.json, fallback_kind: front_loaded}}
+    - {name: theory_optimized, schedule: {kind: theory_optimized}}

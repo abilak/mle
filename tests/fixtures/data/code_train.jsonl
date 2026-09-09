@@ -1,0 +1,11 @@
+{"task_id":"fixture/0","prompt":"Return the sum of two integers.","human_responses":["def add(a, b):\n    return a + b"],"tests":["assert add(2, 3) == 5"],"skill":"number_theory","metadata":{}}
+{"task_id":"fixture/1","prompt":"Reverse a string.","human_responses":["def reverse_string(value):\n    return value[::-1]"],"tests":["assert reverse_string('abc') == 'cba'"],"skill":"strings","metadata":{}}
+{"task_id":"fixture/2","prompt":"Return the maximum element of a list.","human_responses":["def maximum(values):\n    return max(values)"],"tests":["assert maximum([1, 4, 2]) == 4"],"skill":"arrays","metadata":{}}
+{"task_id":"fixture/3","prompt":"Test whether an integer is even.","human_responses":["def is_even(value):\n    return value % 2 == 0"],"tests":["assert is_even(4)"],"skill":"number_theory","metadata":{}}
+{"task_id":"fixture/4","prompt":"Sort a list in ascending order.","human_responses":["def sort_values(values):\n    return sorted(values)"],"tests":["assert sort_values([2, 1]) == [1, 2]"],"skill":"sorting_search","metadata":{}}
+{"task_id":"fixture/5","prompt":"Count the characters in a string.","human_responses":["def length(value):\n    return len(value)"],"tests":["assert length('abc') == 3"],"skill":"strings","metadata":{}}
+{"task_id":"fixture/6","prompt":"Return the square of an integer.","human_responses":["def square(value):\n    return value * value"],"tests":["assert square(5) == 25"],"skill":"number_theory","metadata":{}}
+{"task_id":"fixture/7","prompt":"Return the first item in a list.","human_responses":["def first(values):\n    return values[0]"],"tests":["assert first([3, 4]) == 3"],"skill":"arrays","metadata":{}}
+{"task_id":"fixture/8","prompt":"Join two strings.","human_responses":["def join(a, b):\n    return a + b"],"tests":["assert join('a', 'b') == 'ab'"],"skill":"strings","metadata":{}}
+{"task_id":"fixture/9","prompt":"Return the minimum element of a list.","human_responses":["def minimum(values):\n    return min(values)"],"tests":["assert minimum([3, 1]) == 1"],"skill":"arrays","metadata":{}}
+

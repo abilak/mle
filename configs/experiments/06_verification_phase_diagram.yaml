@@ -1,0 +1,10 @@
+extends: ../base_llm.yaml
+study:
+  name: exp06_verification_phase_diagram
+  calibration_file: results/llm/schedule_law.json
+  seeds: [11, 23, 47]
+  condition_generator:
+    kind: verification_grid
+    budgets: [0, 256, 512, 1024]
+    verification_modes: [none, compile, external_tests, self_score]
+    theory_verification: external_tests

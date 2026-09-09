@@ -1,0 +1,2 @@
+{"task_id":"monitor/0","prompt":"Return the absolute value of an integer.","human_responses":["def absolute(value):\n    return abs(value)"],"tests":["assert absolute(-2) == 2"],"skill":"number_theory","metadata":{}}
+

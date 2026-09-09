@@ -1,0 +1,20 @@
+extends: ../base_llm.yaml
+evaluation:
+  monitor_every_round: true
+study:
+  name: exp07_synthetic_strategies
+  calibration_file: results/llm/schedule_law.json
+  seeds: [11, 23, 47]
+  conditions:
+    - name: passive
+      schedule: {kind: theory_optimized}
+      overrides: {synthetic: {strategy: passive}, verification: {mode: none}}
+    - name: static_pool
+      schedule: {kind: theory_optimized}
+      overrides: {synthetic: {strategy: static}, verification: {mode: none}}
+    - name: failure_targeted
+      schedule: {kind: theory_optimized}
+      overrides: {synthetic: {strategy: failure_targeted}, verification: {mode: none}}
+    - name: verified
+      schedule: {kind: theory_optimized}
+      overrides: {synthetic: {strategy: passive}, verification: {mode: external_tests}}

@@ -1,0 +1,10 @@
+extends: ../base_llm.yaml
+study:
+  name: exp04_vanishing_grounding
+  rounds: 40
+  seeds: [11, 23, 47, 71, 101]
+  conditions:
+    - name: divergent_r1
+      schedule: {kind: vanishing, synthetic_scale: 32, real_scale: 12, log_power: 1.0}
+    - name: summable_r2
+      schedule: {kind: vanishing, synthetic_scale: 32, real_scale: 12, log_power: 2.0}

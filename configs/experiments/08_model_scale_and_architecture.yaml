@@ -1,0 +1,48 @@
+extends: ../base_llm.yaml
+study:
+  name: exp08_model_scale_architecture
+  calibration_file: results/llm/schedule_law.json
+  seeds: [11, 23, 47]
+  conditions:
+    - name: qwen_05b_uniform
+      schedule: {kind: uniform}
+    - name: qwen_05b_selected_bad
+      schedule: {kind: selected_worst, file: results/llm/selected_confirmation_schedule.json, fallback_kind: front_loaded}
+    - name: qwen_05b_selected_good
+      schedule: {kind: selected_schedule, file: results/llm/selected_success_schedule.json, fallback_kind: back_loaded}
+    - name: qwen_05b_theory
+      schedule: {kind: theory_optimized}
+    - name: qwen_15b_uniform
+      schedule: {kind: uniform}
+      overrides: {model: {name: Qwen/Qwen2.5-Coder-1.5B-Instruct}}
+    - name: qwen_15b_selected_bad
+      schedule: {kind: selected_worst, file: results/llm/selected_confirmation_schedule.json, fallback_kind: front_loaded}
+      overrides: {model: {name: Qwen/Qwen2.5-Coder-1.5B-Instruct}}
+    - name: qwen_15b_selected_good
+      schedule: {kind: selected_schedule, file: results/llm/selected_success_schedule.json, fallback_kind: back_loaded}
+      overrides: {model: {name: Qwen/Qwen2.5-Coder-1.5B-Instruct}}
+    - name: qwen_15b_theory
+      schedule: {kind: theory_optimized}
+      overrides: {model: {name: Qwen/Qwen2.5-Coder-1.5B-Instruct}}
+    - name: qwen_15b_theory_verified
+      schedule: {kind: theory_optimized}
+      overrides:
+        model: {name: Qwen/Qwen2.5-Coder-1.5B-Instruct}
+        verification: {mode: external_tests}
+    - name: deepseek_13b_uniform
+      schedule: {kind: uniform}
+      overrides: {model: {name: deepseek-ai/deepseek-coder-1.3b-instruct}}
+    - name: deepseek_13b_selected_bad
+      schedule: {kind: selected_worst, file: results/llm/selected_confirmation_schedule.json, fallback_kind: front_loaded}
+      overrides: {model: {name: deepseek-ai/deepseek-coder-1.3b-instruct}}
+    - name: deepseek_13b_selected_good
+      schedule: {kind: selected_schedule, file: results/llm/selected_success_schedule.json, fallback_kind: back_loaded}
+      overrides: {model: {name: deepseek-ai/deepseek-coder-1.3b-instruct}}
+    - name: deepseek_13b_theory
+      schedule: {kind: theory_optimized}
+      overrides: {model: {name: deepseek-ai/deepseek-coder-1.3b-instruct}}
+    - name: deepseek_13b_theory_verified
+      schedule: {kind: theory_optimized}
+      overrides:
+        model: {name: deepseek-ai/deepseek-coder-1.3b-instruct}
+        verification: {mode: external_tests}

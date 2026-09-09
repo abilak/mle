@@ -1,0 +1,10 @@
+experiments/01_same_budget.yaml
+experiments/02_schedule_law.yaml
+experiments/03_grounding_controller.yaml
+experiments/04_vanishing_grounding.yaml
+experiments/05_capability_erosion.yaml
+experiments/06_verification_phase_diagram.yaml
+experiments/07_synthetic_strategies.yaml
+experiments/08_model_scale_and_architecture.yaml
+experiments/09_reasoning_transfer.yaml
+experiments/10_training_mode_robustness.yaml

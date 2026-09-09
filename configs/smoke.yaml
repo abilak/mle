@@ -1,0 +1,21 @@
+extends: base_llm.yaml
+model:
+  backend: analytic
+  name: analytic-base
+data:
+  processed_dir: tests/fixtures/data
+  allow_real_reuse: true
+training:
+  max_steps: 1
+evaluation:
+  code_execution: disabled
+study:
+  name: smoke
+  rounds: 3
+  seeds: [11]
+  total_real: 6
+  synthetic_per_round: 2
+  conditions:
+    - {name: uniform, schedule: {kind: uniform}}
+    - {name: theory, schedule: {kind: theory_optimized}}
+

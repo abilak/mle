@@ -1,0 +1,82 @@
+project:
+  name: grounding-self-improving-ai
+  claim_scope: empirical_analogue_of_moment_matching_mle
+
+model:
+  backend: hf
+  name: Qwen/Qwen2.5-Coder-0.5B-Instruct
+
+data:
+  processed_dir: data/processed
+  cache_dir: .cache/huggingface
+  code_dataset: codeparrot/apps
+  code_config: all
+  code_revision: null
+  math_dataset: openai/gsm8k
+  math_config: main
+  math_revision: null
+  monitor_fraction: 0.10
+  contamination_threshold: 0.80
+  allow_real_reuse: false
+
+training:
+  mode: refit_full
+  domain: code
+  max_length: 1024
+  max_prompt_length: 768
+  pad_to_max_length: true
+  max_steps: 100
+  batch_size: 1
+  gradient_accumulation_steps: 8
+  learning_rate: 0.0002
+  warmup_ratio: 0.03
+  weight_decay: 0.0
+  lr_scheduler_type: cosine
+  gradient_checkpointing: true
+  logging_steps: 10
+  lora:
+    enabled: true
+    rank: 16
+    alpha: 32
+    dropout: 0.05
+    target_modules: [q_proj, k_proj, v_proj, o_proj]
+
+generation:
+  batch_size: 4
+  max_prompt_length: 1024
+  max_new_tokens: 512
+  do_sample: true
+  temperature: 0.8
+  top_p: 0.95
+
+synthetic:
+  strategy: passive
+
+verification:
+  mode: none
+  max_attempt_multiplier: 8
+  docker_image: python:3.11-slim
+
+evaluation:
+  benchmarks: [humaneval, mbpp]
+  code_execution: docker
+  evalplus_image: ganler/evalplus:v0.3.1
+  evalplus_memory: 4g
+  evalplus_cpus: 4
+  parallel: 2
+  timeout_seconds: 7200
+  every_rounds: 1
+  mini: false
+  monitor_every_round: false
+  monitor_tasks: 64
+  monitor_verification: external_tests
+
+policy:
+  kind: open_loop
+
+study:
+  name: base
+  rounds: 10
+  seeds: [11, 23, 47]
+  total_real: 1024
+  synthetic_per_round: 512
