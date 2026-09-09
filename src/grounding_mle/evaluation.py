@@ -6,13 +6,14 @@ import re
 import shutil
 import subprocess
 from collections import defaultdict
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Sequence
 
 import numpy as np
 
 from .capabilities import capability_metadata, infer_skill
-from .io import atomic_write_json, atomic_write_jsonl, read_json
+from .io import atomic_write_json, atomic_write_jsonl, read_json, read_jsonl
 from .modeling import ModelBackend
 from .records import PromptRecord
 
@@ -79,6 +80,45 @@ def _parse_evalplus_result(path: Path, prompts: Sequence[PromptRecord]) -> dict[
     }
 
 
+@lru_cache(maxsize=1)
+def _require_docker() -> None:
+    if shutil.which("docker") is None:
+        raise RuntimeError("Docker is required for safe EvalPlus execution")
+    try:
+        completed = subprocess.run(
+            ["docker", "info", "--format", "{{.ServerVersion}}"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(f"Cannot connect to the Docker daemon: {exc}") from exc
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout).strip()
+        raise RuntimeError(
+            "Cannot access the Docker daemon. Confirm that Docker is running and "
+            f"the current user can access its socket: {detail[-1000:]}"
+        )
+
+
+def _cached_completions(
+    samples_path: Path, prompts: Sequence[PromptRecord]
+) -> list[str] | None:
+    if not samples_path.exists():
+        return None
+    try:
+        rows = list(read_jsonl(samples_path))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
+    if [row.get("task_id") for row in rows] != [prompt.task_id for prompt in prompts]:
+        return None
+    solutions = [row.get("solution") for row in rows]
+    if not all(isinstance(solution, str) for solution in solutions):
+        return None
+    return [str(solution) for solution in solutions]
+
+
 def evaluate_evalplus(
     backend: ModelBackend,
     model_ref: str,
@@ -91,6 +131,17 @@ def evaluate_evalplus(
 ) -> dict[str, Any]:
     if evaluation_config.get("code_execution", "docker") == "disabled":
         return {"skipped": True, "reason": "code execution disabled"}
+    output_dir.mkdir(parents=True, exist_ok=True)
+    metrics_path = output_dir / f"{dataset_name}_metrics.json"
+    if metrics_path.exists():
+        return read_json(metrics_path)
+
+    execution = evaluation_config.get("code_execution", "docker")
+    if execution == "docker":
+        _require_docker()
+    elif execution != "native_unsafe":
+        raise ValueError(f"Unsupported execution backend: {execution}")
+
     prompts = _evalplus_problems(dataset_name)
     max_tasks = evaluation_config.get("max_tasks")
     if max_tasks is not None and int(max_tasks) < len(prompts):
@@ -98,22 +149,20 @@ def evaluate_evalplus(
             "EvalPlus requires a completion for every benchmark problem; "
             "partial max_tasks evaluation is intentionally unsupported"
         )
-    completions = backend.generate(
-        model_ref, prompts, generation_config, seed, base_model, "code"
-    )
-    output_dir.mkdir(parents=True, exist_ok=True)
     samples_path = output_dir / f"{dataset_name}_samples.jsonl"
-    atomic_write_jsonl(
-        samples_path,
-        (
-            {"task_id": prompt.task_id, "solution": completion}
-            for prompt, completion in zip(prompts, completions, strict=True)
-        ),
-    )
-    execution = evaluation_config.get("code_execution", "docker")
+    completions = _cached_completions(samples_path, prompts)
+    if completions is None:
+        completions = backend.generate(
+            model_ref, prompts, generation_config, seed, base_model, "code"
+        )
+        atomic_write_jsonl(
+            samples_path,
+            (
+                {"task_id": prompt.task_id, "solution": completion}
+                for prompt, completion in zip(prompts, completions, strict=True)
+            ),
+        )
     if execution == "docker":
-        if shutil.which("docker") is None:
-            raise RuntimeError("Docker is required for safe EvalPlus execution")
         image = str(evaluation_config.get("evalplus_image", "ganler/evalplus:v0.3.1"))
         command = [
             "docker",
@@ -156,8 +205,6 @@ def evaluate_evalplus(
             "--parallel",
             str(evaluation_config.get("parallel", 2)),
         ]
-    else:
-        raise ValueError(f"Unsupported execution backend: {execution}")
     completed = subprocess.run(
         command,
         cwd=output_dir,
@@ -185,7 +232,7 @@ def evaluate_evalplus(
     if not result_candidates:
         raise RuntimeError("EvalPlus completed without writing an eval_results JSON file")
     metrics = _parse_evalplus_result(result_candidates[-1], prompts)
-    atomic_write_json(output_dir / f"{dataset_name}_metrics.json", metrics)
+    atomic_write_json(metrics_path, metrics)
     return metrics
 
 
