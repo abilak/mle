@@ -11,6 +11,22 @@ from .io import atomic_write_json, seed_everything
 from .records import PromptRecord, TrainingExample
 
 
+def _empty_device_cache() -> None:
+    """Release accelerator caches only when the corresponding backend is usable."""
+    import torch
+
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    mps_backend = getattr(torch.backends, "mps", None)
+    if (
+        mps_backend is not None
+        and mps_backend.is_available()
+        and getattr(torch, "mps", None) is not None
+        and hasattr(torch.mps, "empty_cache")
+    ):
+        torch.mps.empty_cache()
+
+
 def instruction_text(prompt: str, domain: str = "code") -> str:
     if domain == "raw":
         return prompt
@@ -331,10 +347,7 @@ class HuggingFaceBackend(ModelBackend):
         )
         del trainer, model
         gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        if getattr(torch, "mps", None) and hasattr(torch.mps, "empty_cache"):
-            torch.mps.empty_cache()
+        _empty_device_cache()
         return str(output_dir)
 
     def generate(
@@ -369,27 +382,32 @@ class HuggingFaceBackend(ModelBackend):
                 truncation=True,
                 max_length=int(config.get("max_prompt_length", 1024)),
             ).to(device)
-            with torch.inference_mode():
-                generated = model.generate(
-                    **encoded,
-                    max_new_tokens=int(config.get("max_new_tokens", 512)),
-                    do_sample=bool(config.get("do_sample", True)),
+            do_sample = bool(config.get("do_sample", True))
+            generation_kwargs: dict[str, Any] = {
+                "max_new_tokens": int(config.get("max_new_tokens", 512)),
+                "do_sample": do_sample,
+                "num_return_sequences": 1,
+                "pad_token_id": tokenizer.pad_token_id,
+                "eos_token_id": tokenizer.eos_token_id,
+            }
+            if do_sample:
+                generation_kwargs.update(
                     temperature=float(config.get("temperature", 0.8)),
                     top_p=float(config.get("top_p", 0.95)),
-                    num_return_sequences=1,
-                    pad_token_id=tokenizer.pad_token_id,
-                    eos_token_id=tokenizer.eos_token_id,
                 )
+            else:
+                # Instruction models can ship sampling defaults. Clear them
+                # explicitly for deterministic benchmark evaluation.
+                generation_kwargs.update(temperature=None, top_p=None, top_k=None)
+            with torch.inference_mode():
+                generated = model.generate(**encoded, **generation_kwargs)
             encoded_length = int(encoded["input_ids"].shape[1])
             for item in generated:
                 decoded = tokenizer.decode(item[encoded_length:], skip_special_tokens=True)
                 outputs.append(strip_code_fences(decoded) if domain == "code" else decoded.strip())
         del model
         gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        if getattr(torch, "mps", None) and hasattr(torch.mps, "empty_cache"):
-            torch.mps.empty_cache()
+        _empty_device_cache()
         return outputs
 
 

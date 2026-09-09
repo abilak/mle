@@ -1,4 +1,7 @@
-from grounding_mle.modeling import _CausalSFTDataset, formatted_prompt
+import sys
+from types import SimpleNamespace
+
+from grounding_mle.modeling import _CausalSFTDataset, _empty_device_cache, formatted_prompt
 from grounding_mle.records import TrainingExample
 
 
@@ -38,3 +41,24 @@ def test_chat_template_is_used_when_available():
     tokenizer.chat_template = "configured"
     tokenizer.apply_chat_template = lambda messages, **kwargs: "CHAT:" + messages[0]["content"]
     assert formatted_prompt(tokenizer, "hello", "code").startswith("CHAT:")
+
+
+def test_empty_device_cache_does_not_call_unavailable_mps(monkeypatch):
+    class UnavailableMPS:
+        @staticmethod
+        def is_available():
+            return False
+
+    class MPSNamespace:
+        @staticmethod
+        def empty_cache():
+            raise AssertionError("MPS cache must not be used when its backend is unavailable")
+
+    fake_torch = SimpleNamespace(
+        cuda=SimpleNamespace(is_available=lambda: False),
+        backends=SimpleNamespace(mps=UnavailableMPS()),
+        mps=MPSNamespace(),
+    )
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+
+    _empty_device_cache()
