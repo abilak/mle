@@ -17,7 +17,7 @@ import numpy as np
 
 
 def canonical_json(value: Any) -> str:
-    if is_dataclass(value):
+    if is_dataclass(value) and not isinstance(value, type):
         value = asdict(value)
     return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
 
@@ -133,4 +133,3 @@ def runtime_manifest() -> dict[str, Any]:
         "packages": packages,
         "git_commit": git_commit,
     }
-

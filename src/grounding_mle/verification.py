@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import ast
 import json
-import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
 
+from .docker_support import docker_user_spec, require_docker
 from .io import atomic_write_json
 from .modeling import ModelBackend
 from .records import PromptRecord
@@ -117,8 +117,7 @@ class DockerCodeVerifier:
     def __init__(self, image: str = "python:3.11-slim", timeout_seconds: int = 12):
         self.image = image
         self.timeout_seconds = timeout_seconds
-        if shutil.which("docker") is None:
-            raise RuntimeError("Docker is required for external-test verification")
+        require_docker()
 
     def verify(self, prompt: PromptRecord, candidate: str) -> VerificationResult:
         with tempfile.TemporaryDirectory(prefix="grounding-verify-") as directory:
@@ -150,7 +149,7 @@ class DockerCodeVerifier:
                 "--cpus",
                 "1",
                 "--user",
-                "65534:65534",
+                docker_user_spec(),
                 "--tmpfs",
                 "/tmp:rw,noexec,nosuid,size=64m",
                 "-v",

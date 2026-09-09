@@ -3,7 +3,8 @@ import os
 import subprocess
 import sys
 
-from grounding_mle.verification import SANDBOX_RUNNER
+from grounding_mle.records import PromptRecord
+from grounding_mle.verification import DockerCodeVerifier, SANDBOX_RUNNER
 
 
 def _run_safe_fixture(tmp_path, payload):
@@ -52,3 +53,30 @@ def test_apps_standard_input_line_arrays(tmp_path):
         },
     )
     assert result["accepted"] is True
+
+
+def test_docker_verifier_uses_host_identity(monkeypatch):
+    commands = []
+    monkeypatch.setattr("grounding_mle.verification.require_docker", lambda: None)
+    monkeypatch.setattr("grounding_mle.verification.docker_user_spec", lambda: "1234:5678")
+
+    def fake_run(command, **kwargs):
+        commands.append(command)
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout='{"accepted": true, "reason": "passed"}\n',
+            stderr="",
+        )
+
+    monkeypatch.setattr("grounding_mle.verification.subprocess.run", fake_run)
+    verifier = DockerCodeVerifier()
+    result = verifier.verify(
+        PromptRecord(task_id="one", prompt="prompt", human_responses=[]),
+        "def answer(): return 1",
+    )
+
+    assert result.accepted is True
+    command = commands[0]
+    assert command[command.index("--user") + 1] == "1234:5678"
+    assert command[command.index("--network") + 1] == "none"

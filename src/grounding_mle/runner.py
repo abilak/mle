@@ -17,6 +17,7 @@ from .io import (
     append_jsonl,
     atomic_write_json,
     atomic_write_jsonl,
+    canonical_json,
     read_json,
     read_jsonl,
     runtime_manifest,
@@ -286,8 +287,13 @@ def run_planned(planned: PlannedRun, output_root: str | Path, resume: bool = Tru
     if not config_path.exists():
         atomic_write_json(config_path, planned.to_dict())
         atomic_write_json(run_dir / "runtime.json", runtime_manifest())
-    elif not resume:
-        raise FileExistsError(f"Run directory already exists: {run_dir}")
+    else:
+        if canonical_json(read_json(config_path)) != canonical_json(planned.to_dict()):
+            raise RuntimeError(
+                f"Existing run directory does not match plan entry {planned.run_id}"
+            )
+        if not resume:
+            raise FileExistsError(f"Run directory already exists: {run_dir}")
 
     domain = str(config["training"].get("domain", "code"))
     processed = Path(config["data"]["processed_dir"])
@@ -342,8 +348,11 @@ def run_planned(planned: PlannedRun, output_root: str | Path, resume: bool = Tru
             corpus_rows = corpus_rows[:committed_examples]
             atomic_write_jsonl(corpus_path, corpus_rows)
         corpus = [TrainingExample(**row) for row in corpus_rows]
+    elif corpus_path.exists():
+        # A crash before the first state commit can leave an uncommitted tail.
+        atomic_write_jsonl(corpus_path, [])
 
-    if start_round == 0:
+    if not trajectory:
         baseline_dir = run_dir / "evaluation" / "round_00"
         if config["model"]["backend"] == "analytic":
             baseline_model_dir = run_dir / "checkpoints" / "round_00"
@@ -360,10 +369,29 @@ def run_planned(planned: PlannedRun, output_root: str | Path, resume: bool = Tru
             math_test,
         )
         trajectory.append({"round": 0, "evaluation": baseline, "phase": "baseline"})
+        atomic_write_json(
+            state_path,
+            {
+                "status": "running",
+                "run_id": planned.run_id,
+                "next_round": 0,
+                "current_model": current_model,
+                "real_cursor": 0,
+                "synthetic_cursor": 0,
+                "actual_real": [],
+                "actual_synthetic": [],
+                "remaining_reactive_budget": remaining_reactive_budget,
+                "previous_monitor": None,
+                "trajectory": trajectory,
+            },
+        )
 
     strategy = str(config.get("synthetic", {}).get("strategy", "passive"))
     static_cache: list[TrainingExample] | None = None
-    if strategy == "static" and start_round == 0:
+    static_path = run_dir / "static_synthetic.jsonl"
+    if strategy == "static" and static_path.exists():
+        static_cache = [TrainingExample(**row) for row in read_jsonl(static_path)]
+    elif strategy == "static" and start_round == 0:
         total_synthetic = sum(planned.synthetic_counts)
         prompts = _cyclic_slice(synthetic_pool, 0, total_synthetic)
         kept_prompts, responses, reasons, attempts, audit = _generate_accepted(
@@ -379,11 +407,11 @@ def run_planned(planned: PlannedRun, output_root: str | Path, resume: bool = Tru
             domain=domain,
         )
         static_cache = _synthetic_examples(kept_prompts, responses, reasons, -1)
-        atomic_write_jsonl(run_dir / "static_synthetic.jsonl", (row.to_dict() for row in static_cache))
+        atomic_write_jsonl(static_path, (row.to_dict() for row in static_cache))
         atomic_write_jsonl(run_dir / "static_generation_attempts.jsonl", audit)
         atomic_write_json(run_dir / "static_synthetic_summary.json", {"attempts": attempts, "retained": len(static_cache)})
-    elif strategy == "static" and (run_dir / "static_synthetic.jsonl").exists():
-        static_cache = [TrainingExample(**row) for row in read_jsonl(run_dir / "static_synthetic.jsonl")]
+    elif strategy == "static":
+        raise RuntimeError(f"Static synthetic cache is missing for resumed run {planned.run_id}")
 
     policy = config.get("policy", {})
     for round_index in range(start_round, len(planned.real_counts)):

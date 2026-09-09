@@ -99,7 +99,7 @@ def random_schedule_bank(
     rng = np.random.default_rng(seed)
     schedules: list[dict[str, Any]] = []
     seen: set[tuple[int, ...]] = set()
-    templates = [
+    templates: list[tuple[str, dict[str, Any]]] = [
         ("uniform", {}),
         ("front_loaded", {"decay": 0.8}),
         ("back_loaded", {"growth": 0.8}),

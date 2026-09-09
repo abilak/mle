@@ -128,11 +128,13 @@ def _load_dataset_robust(
     kwargs: dict[str, Any] = {"split": split, "cache_dir": cache_dir}
     if revision:
         kwargs["revision"] = revision
+    script_error: RuntimeError | None = None
     try:
         return load_dataset(repo_id, config_name, **kwargs)
     except RuntimeError as exc:
         if "scripts are no longer supported" not in str(exc).lower():
             raise
+        script_error = exc
     query = urllib.parse.urlencode({"dataset": repo_id, "config": config_name or "default"})
     try:
         import requests
@@ -145,7 +147,7 @@ def _load_dataset_robust(
     payload = response.json()
     urls = [item["url"] for item in payload["parquet_files"] if item["split"] == split]
     if not urls:
-        raise RuntimeError(f"No Parquet files resolved for {repo_id}/{split}") from exc
+        raise RuntimeError(f"No Parquet files resolved for {repo_id}/{split}") from script_error
     return load_dataset("parquet", data_files={split: urls}, split=split, cache_dir=cache_dir)
 
 

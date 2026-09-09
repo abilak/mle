@@ -39,6 +39,18 @@ pytest
 grounding-mle validate-config configs/experiments/01_same_budget.yaml
 ```
 
+Before launching a real trajectory on a new GPU host, run the production
+preflight. It performs one CUDA LoRA step and adapter generation, verifies
+Docker socket and bind-mount permissions, loads both EvalPlus datasets inside
+the network-isolated evaluation container, and exercises external-test
+verification:
+
+```bash
+grounding-mle preflight --config configs/base_llm.yaml --output results/preflight.json
+```
+
+Do not start the sweep unless the report has `"status": "passed"`.
+
 ## Reproduce the paper-aligned experiments
 
 The quick profile is suitable for a laptop and has already been used for implementation QA. The full profile uses the paper-scale Monte Carlo counts.

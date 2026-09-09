@@ -43,7 +43,7 @@ def capability_metadata(prompt: str) -> dict[str, str | int]:
     api_scores = {
         name: sum(normalized.count(term) for term in terms) for name, terms in api_terms.items()
     }
-    api_family = max(api_scores, key=api_scores.get)
+    api_family = max(api_scores, key=lambda name: api_scores[name])
     if api_scores[api_family] == 0:
         api_family = "builtins"
     # Keep this module independent from datasets.py (which imports infer_skill)

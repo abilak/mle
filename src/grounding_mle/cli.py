@@ -11,6 +11,7 @@ from .config import load_config
 from .datasets import prepare_all_data, prepare_code_data, prepare_math_data
 from .io import read_json
 from .planning import PlannedRun, plan_files
+from .preflight import run_runtime_preflight
 from .runner import run_planned
 from .schedules import minimum_budget_for_target, optimize_fixed_budget
 from .theory_experiments import run_theory_suite
@@ -121,6 +122,11 @@ def command_controller(args: argparse.Namespace) -> None:
     )
 
 
+def command_preflight(args: argparse.Namespace) -> None:
+    config = load_config(args.config)
+    _print(run_runtime_preflight(config, args.output, check_model=not args.skip_model))
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="grounding-mle",
@@ -173,6 +179,14 @@ def build_parser() -> argparse.ArgumentParser:
     controller.add_argument("--noise-scale", type=float, default=1.0)
     controller.add_argument("--seed", type=int, default=20260906)
     controller.set_defaults(func=command_controller)
+
+    preflight = subparsers.add_parser(
+        "preflight", help="Exercise CUDA, model training, Docker, and offline EvalPlus integration"
+    )
+    preflight.add_argument("--config", default="configs/base_llm.yaml")
+    preflight.add_argument("--output", default="results/preflight.json")
+    preflight.add_argument("--skip-model", action="store_true")
+    preflight.set_defaults(func=command_preflight)
     return parser
 
 

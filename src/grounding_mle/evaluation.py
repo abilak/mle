@@ -2,18 +2,16 @@ from __future__ import annotations
 
 import json
 import math
-import os
 import re
-import shutil
 import subprocess
 from collections import defaultdict
-from functools import lru_cache
 from pathlib import Path
 from typing import Any, Sequence
 
 import numpy as np
 
 from .capabilities import capability_metadata, infer_skill
+from .docker_support import docker_user_spec, require_docker
 from .io import atomic_write_json, atomic_write_jsonl, read_json, read_jsonl
 from .modeling import ModelBackend
 from .records import PromptRecord
@@ -81,28 +79,6 @@ def _parse_evalplus_result(path: Path, prompts: Sequence[PromptRecord]) -> dict[
     }
 
 
-@lru_cache(maxsize=1)
-def _require_docker() -> None:
-    if shutil.which("docker") is None:
-        raise RuntimeError("Docker is required for safe EvalPlus execution")
-    try:
-        completed = subprocess.run(
-            ["docker", "info", "--format", "{{.ServerVersion}}"],
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise RuntimeError(f"Cannot connect to the Docker daemon: {exc}") from exc
-    if completed.returncode != 0:
-        detail = (completed.stderr or completed.stdout).strip()
-        raise RuntimeError(
-            "Cannot access the Docker daemon. Confirm that Docker is running and "
-            f"the current user can access its socket: {detail[-1000:]}"
-        )
-
-
 def _cached_completions(
     samples_path: Path, prompts: Sequence[PromptRecord]
 ) -> list[str] | None:
@@ -120,9 +96,80 @@ def _cached_completions(
     return [str(solution) for solution in solutions]
 
 
-def _docker_user_spec() -> str:
-    """Run bind-mounted evaluation as the host owner, not container root."""
-    return f"{os.getuid()}:{os.getgid()}"
+def _evalplus_dataset_path(dataset_name: str, mini: bool) -> tuple[Path, str]:
+    """Resolve the exact pinned EvalPlus data file already downloaded on the host."""
+    if dataset_name == "humaneval":
+        from evalplus.data.humaneval import _ready_human_eval_plus_path
+
+        path = _ready_human_eval_plus_path(mini=mini)
+        variable = "HUMANEVAL_OVERRIDE_PATH"
+    elif dataset_name == "mbpp":
+        from evalplus.data.mbpp import _ready_mbpp_plus_path
+
+        path = _ready_mbpp_plus_path(mini=mini)
+        variable = "MBPP_OVERRIDE_PATH"
+    else:
+        raise ValueError("EvalPlus dataset must be humaneval or mbpp")
+    resolved = Path(path).resolve()
+    if not resolved.is_file():
+        raise RuntimeError(f"EvalPlus dataset cache was not created: {resolved}")
+    return resolved, variable
+
+
+def _docker_eval_command(
+    *,
+    output_dir: Path,
+    samples_path: Path,
+    dataset_path: Path,
+    dataset_variable: str,
+    dataset_name: str,
+    evaluation_config: dict[str, Any],
+) -> list[str]:
+    # Share trusted ground-truth outputs across all rounds in one trajectory,
+    # while avoiding cross-run races when array workers execute concurrently.
+    runtime_cache = output_dir.parent.parent / ".evalplus_cache"
+    runtime_cache.mkdir(parents=True, exist_ok=True)
+    container_dataset = f"/evalplus-data/{dataset_path.name}"
+    command = [
+        "docker",
+        "run",
+        "--rm",
+        "--user",
+        docker_user_spec(),
+        "--network",
+        "none",
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges",
+        "--pids-limit",
+        "256",
+        "--memory",
+        str(evaluation_config.get("evalplus_memory", "4g")),
+        "--cpus",
+        str(evaluation_config.get("evalplus_cpus", 4)),
+        "--env",
+        f"{dataset_variable}={container_dataset}",
+        "--env",
+        "XDG_CACHE_HOME=/evalplus-cache",
+        "-v",
+        f"{output_dir.resolve()}:/app",
+        "-v",
+        f"{dataset_path}:{container_dataset}:ro",
+        "-v",
+        f"{runtime_cache.resolve()}:/evalplus-cache",
+        str(evaluation_config.get("evalplus_image", "ganler/evalplus:v0.3.1")),
+        "evalplus.evaluate",
+        "--dataset",
+        dataset_name,
+        "--samples",
+        f"/app/{samples_path.name}",
+        "--parallel",
+        str(evaluation_config.get("parallel", 2)),
+    ]
+    if bool(evaluation_config.get("mini", False)):
+        command.append("--mini")
+    return command
 
 
 def evaluate_evalplus(
@@ -144,7 +191,7 @@ def evaluate_evalplus(
 
     execution = evaluation_config.get("code_execution", "docker")
     if execution == "docker":
-        _require_docker()
+        require_docker()
     elif execution != "native_unsafe":
         raise ValueError(f"Unsupported execution backend: {execution}")
 
@@ -154,6 +201,12 @@ def evaluate_evalplus(
         raise ValueError(
             "EvalPlus requires a completion for every benchmark problem; "
             "partial max_tasks evaluation is intentionally unsupported"
+        )
+    dataset_path: Path | None = None
+    dataset_variable: str | None = None
+    if execution == "docker":
+        dataset_path, dataset_variable = _evalplus_dataset_path(
+            dataset_name, bool(evaluation_config.get("mini", False))
         )
     samples_path = output_dir / f"{dataset_name}_samples.jsonl"
     completions = _cached_completions(samples_path, prompts)
@@ -169,38 +222,15 @@ def evaluate_evalplus(
             ),
         )
     if execution == "docker":
-        image = str(evaluation_config.get("evalplus_image", "ganler/evalplus:v0.3.1"))
-        command = [
-            "docker",
-            "run",
-            "--rm",
-            "--user",
-            _docker_user_spec(),
-            "--network",
-            "none",
-            "--cap-drop",
-            "ALL",
-            "--security-opt",
-            "no-new-privileges",
-            "--pids-limit",
-            "256",
-            "--memory",
-            str(evaluation_config.get("evalplus_memory", "4g")),
-            "--cpus",
-            str(evaluation_config.get("evalplus_cpus", 4)),
-            "-v",
-            f"{output_dir.resolve()}:/app",
-            image,
-            "evalplus.evaluate",
-            "--dataset",
-            dataset_name,
-            "--samples",
-            f"/app/{samples_path.name}",
-            "--parallel",
-            str(evaluation_config.get("parallel", 2)),
-        ]
-        if bool(evaluation_config.get("mini", False)):
-            command.append("--mini")
+        assert dataset_path is not None and dataset_variable is not None
+        command = _docker_eval_command(
+            output_dir=output_dir,
+            samples_path=samples_path,
+            dataset_path=dataset_path,
+            dataset_variable=dataset_variable,
+            dataset_name=dataset_name,
+            evaluation_config=evaluation_config,
+        )
     elif execution == "native_unsafe":
         command = [
             "python",
@@ -213,14 +243,21 @@ def evaluate_evalplus(
             "--parallel",
             str(evaluation_config.get("parallel", 2)),
         ]
-    completed = subprocess.run(
-        command,
-        cwd=output_dir,
-        capture_output=True,
-        text=True,
-        timeout=int(evaluation_config.get("timeout_seconds", 7200)),
-        check=False,
-    )
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=output_dir,
+            capture_output=True,
+            text=True,
+            timeout=int(evaluation_config.get("timeout_seconds", 7200)),
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            f"EvalPlus timed out for {dataset_name} after {exc.timeout} seconds"
+        ) from exc
+    except OSError as exc:
+        raise RuntimeError(f"Could not start EvalPlus for {dataset_name}: {exc}") from exc
     (output_dir / f"{dataset_name}_eval_stdout.txt").write_text(
         completed.stdout + "\n" + completed.stderr, encoding="utf-8"
     )
@@ -271,6 +308,10 @@ def evaluate_gsm8k(
     test_records: Sequence[PromptRecord],
     max_tasks: int | None = None,
 ) -> dict[str, Any]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    metrics_path = output_dir / "gsm8k_metrics.json"
+    if metrics_path.exists():
+        return read_json(metrics_path)
     prompts = list(test_records[:max_tasks] if max_tasks else test_records)
     completions = backend.generate(
         model_ref, prompts, generation_config, seed, base_model, "math"
@@ -288,8 +329,7 @@ def evaluate_gsm8k(
         "accuracy": float(np.mean([row["passed"] for row in task_rows])),
         "tasks": task_rows,
     }
-    output_dir.mkdir(parents=True, exist_ok=True)
-    atomic_write_json(output_dir / "gsm8k_metrics.json", metrics)
+    atomic_write_json(metrics_path, metrics)
     return metrics
 
 

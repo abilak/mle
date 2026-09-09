@@ -1,4 +1,7 @@
+from dataclasses import replace
 from pathlib import Path
+
+import pytest
 
 from grounding_mle.config import load_config
 from grounding_mle.io import append_jsonl, atomic_write_json, read_jsonl
@@ -35,3 +38,26 @@ def test_resume_discards_an_uncommitted_corpus_tail(tmp_path):
 
     assert resumed["status"] == "complete"
     assert len(list(read_jsonl(corpus_path))) == len(committed)
+
+
+def test_resume_discards_first_round_tail_when_state_is_missing(tmp_path):
+    config = load_config(ROOT / "configs" / "smoke.yaml")
+    planned = plan_config(config)[0]
+    state = run_planned(planned, tmp_path)
+    run_dir = tmp_path / planned.run_id
+    corpus_path = run_dir / "corpus.jsonl"
+    (run_dir / "state.json").unlink()
+
+    resumed = run_planned(planned, tmp_path)
+
+    assert resumed["status"] == "complete"
+    assert len(list(read_jsonl(corpus_path))) == state["corpus_examples"]
+
+
+def test_resume_rejects_plan_mismatch_for_existing_run_id(tmp_path):
+    config = load_config(ROOT / "configs" / "smoke.yaml")
+    planned = plan_config(config)[0]
+    run_planned(planned, tmp_path)
+
+    with pytest.raises(RuntimeError, match="does not match plan entry"):
+        run_planned(replace(planned, condition="changed"), tmp_path)

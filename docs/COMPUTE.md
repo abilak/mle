@@ -5,7 +5,7 @@ The full plan is a cluster-scale research program, not a single laptop job. It c
 ## Funnel
 
 1. Run the analytic smoke test and full paper simulations on CPU.
-2. Run one seed and three schedules on Qwen2.5-Coder-0.5B to validate learning rates, output format, acceptance rate, and checkpoint size.
+2. Run `grounding-mle preflight` on the target worker, then run one seed and three schedules on Qwen2.5-Coder-0.5B to validate learning rates, output format, acceptance rate, and checkpoint size.
 3. Run Experiments 1 and 2 on the 0.5B discovery model.
 4. Freeze the schedule-law coefficients and target reliability.
 5. Run controller, verification, capability, and synthetic-strategy studies on 0.5B.
