@@ -46,7 +46,9 @@ def capability_metadata(prompt: str) -> dict[str, str | int]:
     api_family = max(api_scores, key=api_scores.get)
     if api_scores[api_family] == 0:
         api_family = "builtins"
-    length = len(normalize_prompt(prompt).split())
+    # Keep this module independent from datasets.py (which imports infer_skill)
+    # while using the same lightweight token proxy as dataset normalization.
+    length = len(re.sub(r"[^a-z0-9]+", " ", normalized).strip().split())
     if length < 35:
         complexity = "short"
     elif length < 90:
