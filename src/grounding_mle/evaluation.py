@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import re
 import shutil
 import subprocess
@@ -119,6 +120,11 @@ def _cached_completions(
     return [str(solution) for solution in solutions]
 
 
+def _docker_user_spec() -> str:
+    """Run bind-mounted evaluation as the host owner, not container root."""
+    return f"{os.getuid()}:{os.getgid()}"
+
+
 def evaluate_evalplus(
     backend: ModelBackend,
     model_ref: str,
@@ -168,6 +174,8 @@ def evaluate_evalplus(
             "docker",
             "run",
             "--rm",
+            "--user",
+            _docker_user_spec(),
             "--network",
             "none",
             "--cap-drop",
