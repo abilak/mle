@@ -172,6 +172,42 @@ def _docker_eval_command(
     return command
 
 
+def _docker_oom_retry_command(
+    command: Sequence[str], evaluation_config: dict[str, Any]
+) -> list[str]:
+    """Reduce worker fan-out and raise the container cap after a SIGKILL/OOM."""
+    retry = list(command)
+    memory_index = retry.index("--memory") + 1
+    parallel_index = retry.index("--parallel") + 1
+    retry[memory_index] = str(
+        evaluation_config.get("evalplus_oom_retry_memory", "8g")
+    )
+    retry[parallel_index] = str(
+        evaluation_config.get("evalplus_oom_retry_parallel", 1)
+    )
+    return retry
+
+
+def _run_evalplus_command(
+    command: Sequence[str], output_dir: Path, timeout_seconds: int
+) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(
+            list(command),
+            cwd=output_dir,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            f"EvalPlus timed out after {exc.timeout} seconds"
+        ) from exc
+    except OSError as exc:
+        raise RuntimeError(f"Could not start EvalPlus: {exc}") from exc
+
+
 def evaluate_evalplus(
     backend: ModelBackend,
     model_ref: str,
@@ -243,28 +279,33 @@ def evaluate_evalplus(
             "--parallel",
             str(evaluation_config.get("parallel", 2)),
         ]
-    try:
-        completed = subprocess.run(
-            command,
-            cwd=output_dir,
-            capture_output=True,
-            text=True,
-            timeout=int(evaluation_config.get("timeout_seconds", 7200)),
-            check=False,
+    timeout_seconds = int(evaluation_config.get("timeout_seconds", 7200))
+    completed = _run_evalplus_command(command, output_dir, timeout_seconds)
+    attempt_logs = [
+        f"primary return code: {completed.returncode}\n{completed.stdout}\n{completed.stderr}"
+    ]
+    if execution == "docker" and completed.returncode == 137:
+        retry_command = _docker_oom_retry_command(command, evaluation_config)
+        completed = _run_evalplus_command(retry_command, output_dir, timeout_seconds)
+        attempt_logs.append(
+            "OOM retry "
+            f"(memory={retry_command[retry_command.index('--memory') + 1]}, "
+            f"parallel={retry_command[retry_command.index('--parallel') + 1]}) "
+            f"return code: {completed.returncode}\n{completed.stdout}\n{completed.stderr}"
         )
-    except subprocess.TimeoutExpired as exc:
-        raise RuntimeError(
-            f"EvalPlus timed out for {dataset_name} after {exc.timeout} seconds"
-        ) from exc
-    except OSError as exc:
-        raise RuntimeError(f"Could not start EvalPlus for {dataset_name}: {exc}") from exc
     (output_dir / f"{dataset_name}_eval_stdout.txt").write_text(
-        completed.stdout + "\n" + completed.stderr, encoding="utf-8"
+        "\n\n".join(attempt_logs), encoding="utf-8"
     )
     if completed.returncode != 0:
+        oom_hint = (
+            " The container was killed again after retrying with more memory and "
+            "one worker; check host RAM and the Docker daemon logs."
+            if completed.returncode == 137
+            else ""
+        )
         raise RuntimeError(
             f"EvalPlus failed for {dataset_name} with code {completed.returncode}: "
-            f"{completed.stderr[-1000:]}"
+            f"{completed.stderr[-1000:]}{oom_hint}"
         )
     result_candidates = sorted(
         output_dir.glob(f"{samples_path.stem}*eval_results.json"),

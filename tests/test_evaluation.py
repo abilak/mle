@@ -6,6 +6,7 @@ from grounding_mle.docker_support import docker_user_spec, require_docker
 from grounding_mle.evaluation import (
     _cached_completions,
     _docker_eval_command,
+    _docker_oom_retry_command,
     _parse_evalplus_result,
 )
 from grounding_mle.io import atomic_write_json, atomic_write_jsonl
@@ -85,6 +86,30 @@ def test_evalplus_container_is_offline_and_receives_local_dataset(tmp_path, monk
     assert "HUMANEVAL_OVERRIDE_PATH=/evalplus-data/HumanEvalPlus-v0.1.10.jsonl" in command
     assert f"{dataset.resolve()}:/evalplus-data/{dataset.name}:ro" in command
     assert "XDG_CACHE_HOME=/evalplus-cache" in command
+
+
+def test_evalplus_oom_retry_raises_memory_and_reduces_parallelism(tmp_path, monkeypatch):
+    output = tmp_path / "evaluation" / "round_00" / "mbpp"
+    output.mkdir(parents=True)
+    samples = output / "mbpp_samples.jsonl"
+    dataset = tmp_path / "MbppPlus-v0.2.0.jsonl"
+    dataset.write_text("{}\n", encoding="utf-8")
+    monkeypatch.setattr("grounding_mle.evaluation.docker_user_spec", lambda: "1234:5678")
+    command = _docker_eval_command(
+        output_dir=output,
+        samples_path=samples,
+        dataset_path=dataset,
+        dataset_variable="MBPP_OVERRIDE_PATH",
+        dataset_name="mbpp",
+        evaluation_config={"evalplus_memory": "4g", "parallel": 2},
+    )
+
+    retry = _docker_oom_retry_command(command, {})
+
+    assert command[command.index("--memory") + 1] == "4g"
+    assert command[command.index("--parallel") + 1] == "2"
+    assert retry[retry.index("--memory") + 1] == "8g"
+    assert retry[retry.index("--parallel") + 1] == "1"
 
 
 def test_evalplus_v031_result_schema_is_parsed(tmp_path):
