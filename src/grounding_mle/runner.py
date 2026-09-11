@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Sequence
@@ -44,6 +45,21 @@ def _cyclic_slice(pool: Sequence[PromptRecord], start: int, count: int) -> list[
     if not pool and count:
         raise ValueError("Cannot draw from an empty prompt pool")
     return [pool[(start + offset) % len(pool)] for offset in range(count)]
+
+
+def _discard_uncommitted_round_outputs(
+    run_dir: Path, first_round: int, total_rounds: int
+) -> None:
+    """Remove artifacts that were written after the last atomic state commit."""
+    for round_number in range(first_round, total_rounds + 1):
+        for directory in (
+            run_dir / "checkpoints" / f"round_{round_number:02d}",
+            run_dir / "evaluation" / f"round_{round_number:02d}",
+        ):
+            if directory.exists():
+                shutil.rmtree(directory)
+        attempts = run_dir / "generation" / f"round_{round_number:02d}_attempts.jsonl"
+        attempts.unlink(missing_ok=True)
 
 
 def _human_examples(
@@ -347,10 +363,14 @@ def run_planned(planned: PlannedRun, output_root: str | Path, resume: bool = Tru
         if len(corpus_rows) > committed_examples:
             corpus_rows = corpus_rows[:committed_examples]
             atomic_write_jsonl(corpus_path, corpus_rows)
+            _discard_uncommitted_round_outputs(
+                run_dir, start_round + 1, len(planned.real_counts)
+            )
         corpus = [TrainingExample(**row) for row in corpus_rows]
     elif corpus_path.exists():
         # A crash before the first state commit can leave an uncommitted tail.
         atomic_write_jsonl(corpus_path, [])
+        _discard_uncommitted_round_outputs(run_dir, 1, len(planned.real_counts))
 
     if not trajectory:
         baseline_dir = run_dir / "evaluation" / "round_00"
