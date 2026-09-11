@@ -8,6 +8,7 @@ from grounding_mle.evaluation import (
     _docker_eval_command,
     _docker_oom_retry_command,
     _parse_evalplus_result,
+    _run_evalplus_command,
 )
 from grounding_mle.io import atomic_write_json, atomic_write_jsonl
 from grounding_mle.records import PromptRecord
@@ -82,6 +83,7 @@ def test_evalplus_container_is_offline_and_receives_local_dataset(tmp_path, monk
     )
 
     assert command[command.index("--user") + 1] == "1234:5678"
+    assert command[command.index("--name") + 1].startswith("grounding-mle-humaneval-")
     assert command[command.index("--network") + 1] == "none"
     assert "HUMANEVAL_OVERRIDE_PATH=/evalplus-data/HumanEvalPlus-v0.1.10.jsonl" in command
     assert f"{dataset.resolve()}:/evalplus-data/{dataset.name}:ro" in command
@@ -108,8 +110,50 @@ def test_evalplus_oom_retry_raises_memory_and_reduces_parallelism(tmp_path, monk
 
     assert command[command.index("--memory") + 1] == "4g"
     assert command[command.index("--parallel") + 1] == "2"
-    assert retry[retry.index("--memory") + 1] == "8g"
-    assert retry[retry.index("--parallel") + 1] == "1"
+    assert retry[retry.index("--memory") + 1] == "16g"
+    assert retry[retry.index("--parallel") + 1] == "4"
+
+
+def test_evalplus_runtime_resources_can_be_overridden_without_replanning(
+    tmp_path, monkeypatch
+):
+    output = tmp_path / "evaluation" / "round_00" / "mbpp"
+    output.mkdir(parents=True)
+    dataset = tmp_path / "MbppPlus-v0.2.0.jsonl"
+    dataset.write_text("{}\n", encoding="utf-8")
+    monkeypatch.setenv("GROUNDING_MLE_EVALPLUS_MEMORY", "20g")
+    monkeypatch.setenv("GROUNDING_MLE_EVALPLUS_PARALLEL", "6")
+    monkeypatch.setattr("grounding_mle.evaluation.docker_user_spec", lambda: "1234:5678")
+
+    command = _docker_eval_command(
+        output_dir=output,
+        samples_path=output / "mbpp_samples.jsonl",
+        dataset_path=dataset,
+        dataset_variable="MBPP_OVERRIDE_PATH",
+        dataset_name="mbpp",
+        evaluation_config={"evalplus_memory": "4g", "parallel": 2},
+    )
+
+    assert command[command.index("--memory") + 1] == "20g"
+    assert command[command.index("--parallel") + 1] == "6"
+
+
+def test_evalplus_timeout_forcibly_removes_named_container(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        if command[:2] == ["docker", "run"]:
+            raise subprocess.TimeoutExpired(command, 10)
+        return subprocess.CompletedProcess(command, 0, stdout="removed", stderr="")
+
+    monkeypatch.setattr("grounding_mle.evaluation.subprocess.run", fake_run)
+    command = ["docker", "run", "--rm", "--name", "grounding-mle-test", "image"]
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        _run_evalplus_command(command, tmp_path, 10)
+
+    assert calls[-1] == ["docker", "rm", "--force", "grounding-mle-test"]
 
 
 def test_evalplus_v031_result_schema_is_parsed(tmp_path):
