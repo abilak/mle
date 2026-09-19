@@ -65,11 +65,14 @@ def _tokenize_records(
         bos_id = tokenizer.eos_token_id
     if bos_id is None:
         raise ValueError("The tokenizer needs a BOS or EOS token")
-    pad_id = tokenizer.eos_token_id
-    if pad_id is None:
-        pad_id = tokenizer.pad_token_id
+    pad_id = tokenizer.pad_token_id
     if pad_id is None:
         raise ValueError("The tokenizer needs an EOS or padding token")
+    eos_id = tokenizer.eos_token_id
+    if eos_id is None:
+        raise ValueError("The tokenizer needs an EOS token")
+    if sequence_length < 3:
+        raise ValueError("sequence_length must leave room for BOS, content, and EOS")
     rows: list[list[int]] = []
     skipped = 0
     progress_interval = min(10_000, maximum)
@@ -85,9 +88,9 @@ def _tokenize_records(
             text,
             add_special_tokens=False,
             truncation=True,
-            max_length=sequence_length - 1,
+            max_length=sequence_length - 2,
         )["input_ids"]
-        sequence = [int(bos_id)] + [int(value) for value in tokens]
+        sequence = [int(bos_id)] + [int(value) for value in tokens] + [int(eos_id)]
         sequence.extend([int(pad_id)] * (sequence_length - len(sequence)))
         rows.append(sequence[:sequence_length])
         if progress_interval and len(rows) % progress_interval == 0:
@@ -124,6 +127,8 @@ def prepare_generative_data(
     output = Path(str(data.get("output_dir", "data/generative")))
     output.mkdir(parents=True, exist_ok=True)
     manifest_path = output / "manifest.json"
+    if force:
+        manifest_path.unlink(missing_ok=True)
     if manifest_path.exists() and not force:
         from .io import read_json
 
@@ -134,6 +139,7 @@ def prepare_generative_data(
             "dataset_revision": data.get("dataset_revision"),
             "tokenizer": str(data.get("tokenizer", "gpt2")),
             "sequence_length": int(data.get("sequence_length", 128)),
+            "padding_strategy": "dedicated-eos-terminated-v1",
         }
         mismatches = {
             key: {"existing": existing.get(key), "requested": value}
@@ -155,8 +161,20 @@ def prepare_generative_data(
 
     tokenizer_name = str(data.get("tokenizer", "gpt2"))
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_name, trust_remote_code=False)
-    if tokenizer.pad_token_id is None:
-        tokenizer.pad_token = tokenizer.eos_token
+    if tokenizer.eos_token_id is None:
+        raise ValueError("The tokenizer needs an EOS token")
+    if tokenizer.pad_token_id is None or tokenizer.pad_token_id in {
+        tokenizer.bos_token_id,
+        tokenizer.eos_token_id,
+    }:
+        tokenizer.add_special_tokens(
+            {"pad_token": str(data.get("pad_token", "<|grounding-pad|>"))}
+        )
+    if tokenizer.pad_token_id is None or tokenizer.pad_token_id in {
+        tokenizer.bos_token_id,
+        tokenizer.eos_token_id,
+    }:
+        raise ValueError("The prepared tokenizer must use a dedicated padding token")
     sequence_length = int(data.get("sequence_length", 128))
     fields = [str(value) for value in data.get("text_fields", ["text", "story"])]
     dataset_name = str(data.get("dataset", "roneneldan/TinyStories"))
@@ -202,6 +220,11 @@ def prepare_generative_data(
         "dataset_revision": data.get("dataset_revision"),
         "streaming": bool(data.get("streaming", True)),
         "tokenizer": tokenizer_name,
+        "padding_strategy": "dedicated-eos-terminated-v1",
+        "pad_token": tokenizer.pad_token,
+        "pad_token_id": int(tokenizer.pad_token_id),
+        "eos_token_id": int(tokenizer.eos_token_id),
+        "tokenizer_size": int(len(tokenizer)),
         "sequence_length": sequence_length,
         "train_sequences": int(len(train)),
         "validation_sequences": int(len(validation)),
@@ -212,6 +235,9 @@ def prepare_generative_data(
                 "train": sha256_file(train_path),
                 "validation": sha256_file(validation_path),
                 "tokenizer": tokenizer_name,
+                "padding_strategy": "dedicated-eos-terminated-v1",
+                "pad_token_id": int(tokenizer.pad_token_id),
+                "tokenizer_size": int(len(tokenizer)),
                 "sequence_length": sequence_length,
             }
         ),
@@ -223,12 +249,26 @@ def prepare_generative_data(
 
 def load_token_arrays(data_config: Mapping[str, Any]) -> tuple[np.ndarray, np.ndarray, Path]:
     output = Path(str(data_config.get("output_dir", "data/generative")))
+    manifest_path = output / "manifest.json"
     train_path = output / "train.npy"
     validation_path = output / "validation.npy"
     tokenizer_dir = output / "tokenizer"
-    if not train_path.exists() or not validation_path.exists() or not tokenizer_dir.exists():
+    if (
+        not manifest_path.exists()
+        or not train_path.exists()
+        or not validation_path.exists()
+        or not tokenizer_dir.exists()
+    ):
         raise FileNotFoundError(
             f"Prepared language data are missing under {output}; run generative-prepare first"
+        )
+    from .io import read_json
+
+    manifest = read_json(manifest_path)
+    if manifest.get("padding_strategy") != "dedicated-eos-terminated-v1":
+        raise RuntimeError(
+            "Prepared language data use an obsolete padding strategy; run "
+            "`grounding-mle generative-prepare --config CONFIG --force`."
         )
     return (
         np.load(train_path, mmap_mode="r", allow_pickle=False),

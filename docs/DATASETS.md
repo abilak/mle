@@ -34,9 +34,11 @@ dataset card identifies English text generation, approximately 1M-10M records, a
 CDLA-Sharing-1.0 license. The implementation uses the official train and validation splits,
 the GPT-2 tokenizer, and at most 100,000/10,000 records by default.
 
-Each record becomes a fixed 128-token sequence: a BOS token, truncated story tokens, and EOS
-padding when needed. The preparation command stores integer token arrays, tokenizer files,
-SHA-256 digests, row counts, sequence length, source name, and a combined fingerprint under
+Each record becomes a fixed 128-token sequence: a BOS token, truncated story tokens, EOS, and
+a dedicated padding token when needed. The padding token is distinct from BOS/EOS and is
+excluded from attention, training labels, likelihood totals, and n-gram diagnostics. The
+preparation command stores integer token arrays, tokenizer files, SHA-256 digests, row counts,
+sequence length, source name, padding strategy, and a combined fingerprint under
 `data/generative/`. The frozen teacher sees only the prepared training array. The real-corpus
 endpoint is calculated only on the separately prepared validation array.
 

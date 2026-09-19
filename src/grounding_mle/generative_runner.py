@@ -24,6 +24,8 @@ from .generative_lm import (
     ensure_teacher_artifact,
     ensure_teacher_test_set,
     language_distribution_metrics,
+    non_padding_token_counts,
+    prepared_pad_token_id,
     sample_lm,
     sequence_log_probabilities,
     train_lm,
@@ -208,10 +210,14 @@ def _evaluate_teacher_lm(
     evaluation = config["evaluation"]
     batch_size = int(evaluation.get("likelihood_batch_size", 32))
     student_log_probs = sequence_log_probabilities(checkpoint, teacher_samples, batch_size=batch_size)
-    tokens = teacher_samples.shape[1] - 1
-    difference = (teacher_log_probs - student_log_probs) / tokens
-    teacher_ce = float(-np.mean(teacher_log_probs) / tokens)
-    student_ce = float(-np.mean(student_log_probs) / tokens)
+    pad_token_id = prepared_pad_token_id(tokenizer_path)
+    token_counts = non_padding_token_counts(teacher_samples, pad_token_id)
+    if np.any(token_counts == 0):
+        raise RuntimeError("Teacher evaluation samples contain no predicted tokens")
+    difference = (teacher_log_probs - student_log_probs) / token_counts
+    total_tokens = int(token_counts.sum())
+    teacher_ce = float(-teacher_log_probs.sum() / total_tokens)
+    student_ce = float(-student_log_probs.sum() / total_tokens)
     diagnostic_count = int(evaluation.get("diagnostic_samples", 512))
     student_samples = sample_lm(
         checkpoint,
@@ -229,9 +235,13 @@ def _evaluate_teacher_lm(
         "student_perplexity": float(math.exp(min(50, student_ce))),
         "test_sequences": int(len(teacher_samples)),
     }
-    metrics.update(language_distribution_metrics(reference_samples, student_samples))
+    metrics.update(
+        language_distribution_metrics(
+            reference_samples, student_samples, pad_token_id=pad_token_id
+        )
+    )
     if reference_log_probs is not None:
-        reference_ce = float(-np.mean(reference_log_probs) / tokens)
+        reference_ce = float(-reference_log_probs.sum() / total_tokens)
         metrics["reference_student_cross_entropy"] = reference_ce
         metrics["excess_cross_entropy"] = student_ce - reference_ce
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -262,7 +272,12 @@ def _evaluate_real_corpus_lm(
     log_probs = sequence_log_probabilities(
         checkpoint, test, batch_size=int(evaluation.get("likelihood_batch_size", 32))
     )
-    cross_entropy = float(-np.mean(log_probs) / (test.shape[1] - 1))
+    pad_token_id = prepared_pad_token_id(tokenizer_path)
+    token_counts = non_padding_token_counts(test, pad_token_id)
+    total_tokens = int(token_counts.sum())
+    if total_tokens == 0:
+        raise RuntimeError("Real-corpus evaluation samples contain no predicted tokens")
+    cross_entropy = float(-log_probs.sum() / total_tokens)
     diagnostic_count = min(int(evaluation.get("diagnostic_samples", 512)), len(test))
     student_samples = sample_lm(
         checkpoint,
@@ -276,7 +291,11 @@ def _evaluate_real_corpus_lm(
         "real_perplexity": float(math.exp(min(50, cross_entropy))),
         "test_sequences": count,
     }
-    metrics.update(language_distribution_metrics(test[:diagnostic_count], student_samples))
+    metrics.update(
+        language_distribution_metrics(
+            test[:diagnostic_count], student_samples, pad_token_id=pad_token_id
+        )
+    )
     output_dir.mkdir(parents=True, exist_ok=True)
     atomic_save_numpy(output_dir / "diagnostic_samples.npy", student_samples)
     atomic_write_json(output_dir / "sample_text.json", {"student": decode_examples(tokenizer_path, student_samples)})

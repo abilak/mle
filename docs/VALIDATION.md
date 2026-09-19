@@ -60,3 +60,8 @@ For the neural-generative extension, install `.[generative,dev]`, prepare TinySt
 the generative preflight on the target CUDA worker, and materialize
 `configs/generative/full.yaml`. The passing analytic and one-step neural checks establish
 execution coverage only; they do not establish any reported neural schedule effect.
+
+The prepared tokenizer must have a dedicated padding token distinct from BOS and EOS. Neural
+LM training supplies an attention mask, ignores padded targets, and computes held-out
+cross-entropy over non-padding target tokens only. If an older data manifest used EOS padding,
+rebuild it with `generative-prepare --force` before resuming any LM run.

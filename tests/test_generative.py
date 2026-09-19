@@ -14,6 +14,7 @@ from grounding_mle.generative_analytic import (
     teacher_transition,
 )
 from grounding_mle.generative_data import _tokenize_records
+from grounding_mle.generative_lm import non_padding_token_counts
 from grounding_mle.generative_planning import (
     GenerativePlannedRun,
     load_generative_config,
@@ -194,7 +195,15 @@ def test_text_preparation_skips_empty_dataset_rows() -> None:
         text_fields=["text", "story"],
     )
 
-    assert result.tolist() == [[1, 3, 4, 2, 2], [1, 3, 4, 2, 2]]
+    assert result.tolist() == [[1, 3, 4, 2, 0], [1, 3, 4, 2, 0]]
+
+
+def test_non_padding_token_counts_exclude_bos_and_padding() -> None:
+    sequences = np.asarray(
+        [[1, 3, 2, 0, 0], [1, 4, 5, 2, 0]], dtype=np.int32
+    )
+
+    assert non_padding_token_counts(sequences, pad_token_id=0).tolist() == [2, 3]
 
 
 def test_tiny_neural_lm_train_sample_and_score(tmp_path) -> None:
@@ -207,8 +216,9 @@ def test_tiny_neural_lm_train_sample_and_score(tmp_path) -> None:
     )
 
     rng = np.random.default_rng(7)
-    sequences = rng.integers(0, 32, size=(6, 8), dtype="int32")
+    sequences = rng.integers(3, 32, size=(6, 8), dtype="int32")
     sequences[:, 0] = 1
+    sequences[:, -2:] = 0
     checkpoint = tmp_path / "lm"
     summary = train_lm(
         sequences=sequences,

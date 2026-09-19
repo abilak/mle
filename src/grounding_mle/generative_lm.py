@@ -78,7 +78,9 @@ def create_lm(
     config = transformers.GPT2Config(
         **_architecture_payload(specification, vocab_size, sequence_length)
     )
-    return transformers.GPT2LMHeadModel(config)
+    model = transformers.GPT2LMHeadModel(config)
+    model.loss_type = "ForCausalLM"
+    return model
 
 
 def load_lm(checkpoint: str | Path, *, trainable: bool = False) -> Any:
@@ -88,8 +90,20 @@ def load_lm(checkpoint: str | Path, *, trainable: bool = False) -> Any:
         local_files_only=True,
         torch_dtype=torch.float32,
     )
+    model.loss_type = "ForCausalLM"
     model.config.use_cache = not trainable
     return model
+
+
+def _require_dedicated_padding(model: Any) -> int:
+    pad = model.config.pad_token_id
+    if pad is None or pad in {model.config.bos_token_id, model.config.eos_token_id}:
+        raise RuntimeError(
+            "The LM tokenizer/checkpoint does not have a dedicated padding token. "
+            "Re-run `grounding-mle generative-prepare --config CONFIG --force` and "
+            "restart this experiment."
+        )
+    return int(pad)
 
 
 def _autocast_context(device: str, enabled: bool) -> Any:
@@ -127,6 +141,7 @@ def train_lm(
     model.to(device)
     model.train()
     model.config.use_cache = False
+    pad_token_id = _require_dedicated_padding(model)
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=float(training.get("learning_rate", 3e-4)),
@@ -152,8 +167,15 @@ def train_lm(
                 dtype=torch.long,
                 device=device,
             )
+            attention_mask = batch.ne(pad_token_id)
+            labels = batch.masked_fill(~attention_mask, -100)
             with _autocast_context(device, mixed_precision):
-                result = model(input_ids=batch, labels=batch, use_cache=False)
+                result = model(
+                    input_ids=batch,
+                    attention_mask=attention_mask,
+                    labels=labels,
+                    use_cache=False,
+                )
                 loss = result.loss / accumulation
             loss.backward()
             accumulated_loss += float(loss.detach().cpu())
@@ -211,6 +233,7 @@ def sample_lm(
         bos = model.config.eos_token_id
     if bos is None:
         raise ValueError("The LM configuration has no BOS/EOS token")
+    pad_token_id = _require_dedicated_padding(model)
     outputs: list[np.ndarray] = []
     with torch.inference_mode():
         for start in range(0, count, batch_size):
@@ -221,6 +244,7 @@ def sample_lm(
             for _ in range(sequence_length - 1):
                 result = model(input_ids=current, past_key_values=past, use_cache=True)
                 logits = result.logits[:, -1, :]
+                logits[:, pad_token_id] = -torch.inf
                 probabilities = torch.softmax(logits.float(), dim=-1)
                 next_token = torch.multinomial(probabilities, num_samples=1)
                 tokens = torch.cat([tokens, next_token], dim=1)
@@ -245,6 +269,7 @@ def sequence_log_probabilities(
     model = load_lm(checkpoint)
     model.to(device)
     model.eval()
+    pad_token_id = _require_dedicated_padding(model)
     values: list[np.ndarray] = []
     with torch.inference_mode():
         for start in range(0, len(sequences), batch_size):
@@ -253,12 +278,20 @@ def sequence_log_probabilities(
                 dtype=torch.long,
                 device=device,
             )
-            logits = model(input_ids=batch, use_cache=False).logits[:, :-1, :]
+            attention_mask = batch.ne(pad_token_id)
+            logits = model(
+                input_ids=batch,
+                attention_mask=attention_mask,
+                use_cache=False,
+            ).logits[:, :-1, :]
             targets = batch[:, 1:]
             token_log_probs = torch.log_softmax(logits.float(), dim=-1).gather(
                 -1, targets.unsqueeze(-1)
             )
-            values.append(token_log_probs.squeeze(-1).sum(dim=1).cpu().numpy())
+            target_mask = attention_mask[:, 1:]
+            values.append(
+                (token_log_probs.squeeze(-1) * target_mask).sum(dim=1).cpu().numpy()
+            )
     del model
     clear_accelerator_cache()
     return np.concatenate(values).astype(np.float64, copy=False)
@@ -278,25 +311,42 @@ def _empirical_kl(reference: Counter[Any], candidate: Counter[Any], smoothing: f
     return float(value)
 
 
-def _ngram_counter(sequences: np.ndarray, order: int) -> Counter[Any]:
+def non_padding_token_counts(sequences: np.ndarray, pad_token_id: int) -> np.ndarray:
+    if sequences.ndim != 2:
+        raise ValueError("Token sequences must be a two-dimensional array")
+    return np.count_nonzero(sequences[:, 1:] != pad_token_id, axis=1).astype(
+        np.int64, copy=False
+    )
+
+
+def _ngram_counter(
+    sequences: np.ndarray, order: int, pad_token_id: int | None = None
+) -> Counter[Any]:
     counter: Counter[Any] = Counter()
     for row in sequences:
         values = [int(value) for value in row]
+        if pad_token_id is not None and pad_token_id in values[1:]:
+            values = values[: values.index(pad_token_id, 1)]
         if order == 1:
             counter.update(values[1:])
         else:
-            counter.update(tuple(values[index : index + order]) for index in range(1, len(values) - order + 1))
+            counter.update(
+                tuple(values[index : index + order])
+                for index in range(1, len(values) - order + 1)
+            )
     return counter
 
 
 def language_distribution_metrics(
     reference_samples: np.ndarray,
     student_samples: np.ndarray,
+    *,
+    pad_token_id: int | None = None,
 ) -> dict[str, float]:
-    reference_unigrams = _ngram_counter(reference_samples, 1)
-    student_unigrams = _ngram_counter(student_samples, 1)
-    reference_bigrams = _ngram_counter(reference_samples, 2)
-    student_bigrams = _ngram_counter(student_samples, 2)
+    reference_unigrams = _ngram_counter(reference_samples, 1, pad_token_id)
+    student_unigrams = _ngram_counter(student_samples, 1, pad_token_id)
+    reference_bigrams = _ngram_counter(reference_samples, 2, pad_token_id)
+    student_bigrams = _ngram_counter(student_samples, 2, pad_token_id)
     bigram_total = sum(student_bigrams.values())
     unique_fraction = len(student_bigrams) / max(1, bigram_total)
     repetitions = sum(max(0, count - 1) for count in student_bigrams.values())
@@ -329,6 +379,11 @@ def _token_ids(tokenizer_path: Path) -> tuple[int, int, int, int]:
     pad = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else eos
     if bos is None or eos is None or pad is None:
         raise ValueError("Prepared tokenizer lacks required special token IDs")
+    if pad in {bos, eos}:
+        raise ValueError(
+            "Prepared tokenizer uses BOS/EOS as padding. Re-run "
+            "`grounding-mle generative-prepare --config CONFIG --force`."
+        )
     return int(bos), int(eos), int(pad), int(len(tokenizer))
 
 
@@ -339,6 +394,10 @@ def architecture_with_tokens(
     payload = dict(specification)
     payload.update({"bos_token_id": bos, "eos_token_id": eos, "pad_token_id": pad})
     return payload, vocab_size
+
+
+def prepared_pad_token_id(tokenizer_path: str | Path) -> int:
+    return _token_ids(Path(tokenizer_path))[2]
 
 
 def ensure_teacher_artifact(config: Mapping[str, Any], artifact_root: str | Path) -> Path:
