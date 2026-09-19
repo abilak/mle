@@ -9,6 +9,11 @@ from typing import Any
 from .analysis import analyze_runs
 from .config import load_config
 from .datasets import prepare_all_data, prepare_code_data, prepare_math_data
+from .generative_analysis import analyze_generative_runs
+from .generative_data import prepare_generative_data
+from .generative_planning import GenerativePlannedRun, plan_generative_file
+from .generative_preflight import run_generative_preflight
+from .generative_runner import run_generative_planned
 from .io import read_json
 from .planning import PlannedRun, plan_files
 from .preflight import run_runtime_preflight
@@ -127,6 +132,65 @@ def command_preflight(args: argparse.Namespace) -> None:
     _print(run_runtime_preflight(config, args.output, check_model=not args.skip_model))
 
 
+def command_generative_prepare(args: argparse.Namespace) -> None:
+    _print(prepare_generative_data(args.config, force=args.force))
+
+
+def command_generative_plan(args: argparse.Namespace) -> None:
+    result = plan_generative_file(args.config, args.output)
+    _print({"output": str(Path(args.output).resolve()), "runs": len(result["runs"])})
+
+
+def _selected_generative_runs(args: argparse.Namespace) -> list[GenerativePlannedRun]:
+    payload = read_json(args.plan)
+    if payload.get("kind") != "grounding-mle-generative-plan-v1":
+        raise ValueError("The selected file is not a generative experiment plan")
+    runs = [GenerativePlannedRun.from_dict(row) for row in payload["runs"]]
+    if args.index is not None:
+        if args.index < 0 or args.index >= len(runs):
+            raise IndexError(f"Run index {args.index} outside [0, {len(runs)})")
+        runs = [runs[args.index]]
+    if args.run_id:
+        runs = [run for run in runs if run.run_id == args.run_id]
+    if args.experiment:
+        runs = [run for run in runs if run.experiment == args.experiment]
+    if args.condition:
+        runs = [run for run in runs if run.condition == args.condition]
+    if args.seed is not None:
+        runs = [run for run in runs if run.seed == args.seed]
+    if not runs:
+        raise ValueError("No generative plan entries match the selection")
+    if len(runs) > 1 and not args.all:
+        raise ValueError("Selection matches multiple runs; pass --all or narrow the selection")
+    return runs
+
+
+def command_generative_run(args: argparse.Namespace) -> None:
+    summaries = []
+    for run in _selected_generative_runs(args):
+        state = run_generative_planned(
+            run, args.output_root, resume=not args.no_resume
+        )
+        summaries.append(
+            {
+                "run_id": run.run_id,
+                "status": state["status"],
+                "rounds": state["completed_rounds"],
+            }
+        )
+    _print(summaries)
+
+
+def command_generative_preflight(args: argparse.Namespace) -> None:
+    _print(
+        run_generative_preflight(
+            args.config,
+            args.output,
+            check_vision=not args.skip_vision,
+        )
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="grounding-mle",
@@ -187,6 +251,56 @@ def build_parser() -> argparse.ArgumentParser:
     preflight.add_argument("--output", default="results/preflight.json")
     preflight.add_argument("--skip-model", action="store_true")
     preflight.set_defaults(func=command_preflight)
+
+    generative_prepare = subparsers.add_parser(
+        "generative-prepare",
+        help="Download and tokenize the neural-generative experiment data",
+    )
+    generative_prepare.add_argument("--config", default="configs/generative/full.yaml")
+    generative_prepare.add_argument("--force", action="store_true")
+    generative_prepare.set_defaults(func=command_generative_prepare)
+
+    generative_plan = subparsers.add_parser(
+        "generative-plan",
+        help="Materialize the neural-generative experiment matrix",
+    )
+    generative_plan.add_argument("--config", default="configs/generative/full.yaml")
+    generative_plan.add_argument("--output", default="runs/generative_plan.json")
+    generative_plan.set_defaults(func=command_generative_plan)
+
+    generative_run = subparsers.add_parser(
+        "generative-run",
+        help="Execute one or more entries from a neural-generative plan",
+    )
+    generative_run.add_argument("--plan", required=True)
+    generative_run.add_argument("--output-root", default="runs/generative")
+    generative_run.add_argument("--index", type=int)
+    generative_run.add_argument("--run-id")
+    generative_run.add_argument("--experiment")
+    generative_run.add_argument("--condition")
+    generative_run.add_argument("--seed", type=int)
+    generative_run.add_argument("--all", action="store_true")
+    generative_run.add_argument("--no-resume", action="store_true")
+    generative_run.set_defaults(func=command_generative_run)
+
+    generative_analyze = subparsers.add_parser(
+        "generative-analyze",
+        help="Aggregate neural-generative runs and render the paper figures",
+    )
+    generative_analyze.add_argument("--runs", default="runs/generative")
+    generative_analyze.add_argument("--output", default="results/generative")
+    generative_analyze.set_defaults(
+        func=lambda args: _print(analyze_generative_runs(args.runs, args.output))
+    )
+
+    generative_preflight = subparsers.add_parser(
+        "generative-preflight",
+        help="Exercise neural LM training/sampling and optional vision data",
+    )
+    generative_preflight.add_argument("--config", default="configs/generative/full.yaml")
+    generative_preflight.add_argument("--output", default="results/generative_preflight.json")
+    generative_preflight.add_argument("--skip-vision", action="store_true")
+    generative_preflight.set_defaults(func=command_generative_preflight)
     return parser
 
 

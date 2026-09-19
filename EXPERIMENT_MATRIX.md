@@ -14,6 +14,24 @@
 | 9 | Code to reasoning transfer | `09_reasoning_transfer.yaml` | Uniform/bad/theory schedules on GSM8K |
 | 10 | Theory-aligned versus deployment training | `10_training_mode_robustness.yaml` | Refit-full versus continual-new and continual-full |
 
+## Neural generative-model extension
+
+| # | Requested extension | Implementation | Primary outputs |
+|---:|---|---|---|
+| G1 | Frozen tiny-GPT teacher/student boundary | `gpt_boundary`; `teacher_lm` backend | Exact Monte Carlo sequence KL, CE/PPL, n-gram diagnostics, text samples |
+| G2 | Diverse schedule bank organized by `G_T` | `gpt_schedule_sweep` | 12 schedules and final-KL versus `G_T` rank test |
+| G3 | Same total data, different timing | `gpt_same_budget_timing` | Exact matched totals for front/uniform/back loading |
+| G4 | Misspecified student | `gpt_misspecified` | Excess CE over a large-real-sample reference student |
+| G5 | Real-corpus replication | `gpt_real_corpus` | TinyStories held-out CE/PPL and degeneration diagnostics |
+| G6 | Model-size replication | `gpt_model_scale` | Key schedules at approximately 7M and 16M parameters |
+| G7 | Exact-likelihood normalizing flow | `flow_exact_likelihood`; RealNVP backend | Teacher/student KL and NLL with generated image grids |
+| G8 | Visually explicit mode recovery | `flow_mode_recovery` | Missing-class mass, class KL, feature distance, grids |
+| G9 | Beyond-MLE qualitative stress test | `diffusion_mode_recovery` | DDPM mode metrics and grids under the same schedules |
+
+The complete configuration is `configs/generative/full.yaml`; the CPU protocol validation
+is `configs/generative/smoke.yaml`. See `docs/GENERATIVE_EXPERIMENTS.md` for the claim boundary
+and exact execution order.
+
 ## Mandatory controls
 
 | Control | Where |

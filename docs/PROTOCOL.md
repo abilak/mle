@@ -66,3 +66,28 @@ Each matched condition uses the same maximum optimizer steps, batch size, gradie
 
 The exact recovery theorem applies to the moment-matching MLE class under its stated assumptions. LLM studies can support empirical predictiveness or robustness of schedule variables; they cannot establish a universal human-data threshold for arbitrary neural models. Negative transfer is a valid result and must be reported.
 
+## Preregistered neural-generative extension
+
+The extension fixes the following empirical hypotheses before GPU execution:
+
+1. Frozen-teacher GPT students have lower final teacher-to-student KL under the constant and
+   log-divergent grounding schedules than under the log-squared schedule.
+2. Across the 12-schedule bank, `G_T` has a negative Spearman association with final neural
+   KL. This association is descriptive and is not treated as proof of the regular-family
+   theorem for Transformers.
+3. Front-loaded, uniform, and back-loaded schedules with exactly equal real and synthetic
+   totals have different final KL.
+4. The qualitative ordering is retained under a smaller misspecified student, direct
+   TinyStories grounding, a second model size, and an exact-likelihood flow.
+5. The missing-class probability approaches the balanced target more closely under stronger
+   grounding schedules for both the flow and diffusion stress tests.
+
+Primary endpoints are teacher-to-student sequence KL per token for the well-specified GPT,
+excess teacher cross-entropy for misspecification, held-out TinyStories cross-entropy for the
+real-corpus study, exact teacher/student KL for the flow, and generated missing-class mass for
+mode recovery. Three seeds (`11`, `23`, `37`) are paired across every full condition.
+
+All architectures, step budgets, sample counts, schedules, endpoints, classifier threshold,
+and seeds are fixed in `configs/generative/full.yaml`. The diffusion result is explicitly
+qualitative because denoising score matching is not the paper's MLE setting. Full operational
+details are in `docs/GENERATIVE_EXPERIMENTS.md`.

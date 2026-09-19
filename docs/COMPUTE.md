@@ -35,3 +35,19 @@ Every run writes a resolved config, runtime manifest, accumulated corpus, per-ro
 ## Storage
 
 Refit-full runs can create many adapters. Preserve every checkpoint through analysis, then archive or prune only under an explicit retention policy. Do not prune during a run because earlier checkpoints are required for trajectory auditing.
+
+## Neural-generative extension
+
+The generative extension is a separate 120-entry plan. Its shared frozen teachers and test
+sets are expensive to create but are content-addressed and reused across conditions. Prepare
+TinyStories and run `grounding-mle generative-preflight` before allocating the full sweep.
+
+The 96 GB GPU configuration discussed for this project can run multiple plan entries at
+once, but one entry does not need 96 GB. Begin with two concurrent workers and benchmark a
+complete trajectory before increasing to four. Shared-GPU jobs compete for compute even when
+memory usage looks low. The exact-likelihood flow and diffusion runs also consume CPU and
+system RAM for MNIST classification and feature metrics.
+
+The suggested scientific funnel is boundary, matched timing, schedule sweep, real-corpus,
+misspecified/scale, exact flow, flow mode recovery, and diffusion last. Commands and the
+claim boundary are in `docs/GENERATIVE_EXPERIMENTS.md`.

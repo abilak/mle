@@ -7,10 +7,13 @@ __pycache__/
 .cache/
 data/raw/*
 data/processed/*
+data/generative/*
 !data/raw/.gitkeep
 !data/processed/.gitkeep
+!data/generative/.gitkeep
+artifacts/*
+!artifacts/.gitkeep
 runs/*
 !runs/.gitkeep
 results/*
 !results/.gitkeep
-

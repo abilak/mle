@@ -7,6 +7,12 @@ This repository implements the complete experiment program for studying how exte
 
 The implementation covers all ten experiments in the project specification, the required controls, repeated-seed statistics, held-out schedule-law testing, safe code execution, model-scale replication, and the final five-figure analysis package. See [EXPERIMENT_MATRIX.md](EXPERIMENT_MATRIX.md) for exact coverage.
 
+An additional neural-generative suite implements the frozen tiny-GPT teacher/student
+experiment, theoretically chosen log versus log-squared schedules, a 12-schedule `G_T`
+sweep, matched-budget timing, misspecification, real TinyStories, model-size replication,
+exact-likelihood RealNVP, flow mode recovery, and a small diffusion stress test. Its protocol
+and commands are documented in [docs/GENERATIVE_EXPERIMENTS.md](docs/GENERATIVE_EXPERIMENTS.md).
+
 ## What is implemented
 
 - Exact schedule variables: batch real fraction, `gamma_t = m_t / N_t`, restoring mass `G_T`, survival product `Q_T`, transformed noise `A_T`, and the stable `Q_T^2 A_T` recursion.
@@ -30,6 +36,12 @@ python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install -e '.[llm,dev]'
+```
+
+Install the neural-generative suite with:
+
+```bash
+python -m pip install -e '.[generative,dev]'
 ```
 
 Check the implementation:
@@ -75,6 +87,21 @@ The held-out benchmarks are never used by a scheduling policy. The reactive and 
 ## Run the LLM research program
 
 The suite is intentionally phased. Do not plan the controller studies from their default unit coefficients and present them as empirically calibrated.
+
+## Run the neural-generative extension
+
+These runs have an independent plan and output directory, so they can execute alongside the
+coding-model study without changing it:
+
+```bash
+grounding-mle generative-prepare --config configs/generative/full.yaml
+grounding-mle generative-preflight --config configs/generative/full.yaml
+grounding-mle generative-plan --config configs/generative/full.yaml --output runs/generative_plan.json
+grounding-mle generative-run --plan runs/generative_plan.json --index 0
+grounding-mle generative-analyze --runs runs/generative --output results/generative
+```
+
+Use `configs/generative/smoke.yaml` first for a fast CPU-only end-to-end protocol check.
 
 ### Phase 1: establish the effect and fit the schedule law
 

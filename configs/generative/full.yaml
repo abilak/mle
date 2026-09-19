@@ -1,0 +1,215 @@
+project:
+  name: neural_generative_schedule_stress_tests
+  artifact_root: artifacts/generative
+
+data:
+  dataset: roneneldan/TinyStories
+  streaming: true
+  tokenizer: gpt2
+  text_fields: [text, story]
+  train_split: train
+  validation_split: validation
+  sequence_length: 128
+  train_sequences: 100000
+  validation_sequences: 10000
+  output_dir: data/generative
+  vision_dataset: MNIST
+  vision_data_dir: data/generative/vision
+
+defaults:
+  backend: teacher_lm
+  rounds: 20
+  batch_size: 128
+  seeds: [11, 23, 37]
+  lm:
+    teacher_seed: 20260919
+    teacher_pretrain_sequences: 50000
+    teacher_model: &small_lm
+      n_embd: 128
+      n_layer: 4
+      n_head: 4
+      dropout: 0.0
+    student_model: *small_lm
+    teacher_training:
+      max_steps: 2000
+      batch_size: 32
+      gradient_accumulation_steps: 1
+      learning_rate: 0.0003
+      weight_decay: 0.01
+      mixed_precision: true
+    initial_examples: 512
+    initial_training:
+      max_steps: 100
+      batch_size: 32
+      learning_rate: 0.0003
+      weight_decay: 0.01
+      mixed_precision: true
+    round_training:
+      max_steps: 300
+      batch_size: 32
+      learning_rate: 0.0003
+      weight_decay: 0.01
+      mixed_precision: true
+  evaluation:
+    test_sequences: 5000
+    diagnostic_samples: 512
+    likelihood_batch_size: 32
+    generation_batch_size: 32
+    test_seed: 20260920
+    vision_test_samples: 5000
+    vision_diagnostic_samples: 2000
+  misspecified:
+    enabled: false
+    reference_examples: 20000
+    reference_seed: 20260922
+    reference_training:
+      max_steps: 2000
+      batch_size: 32
+      learning_rate: 0.0003
+      weight_decay: 0.01
+      mixed_precision: true
+  vision:
+    teacher_seed: 20260919
+    teacher_examples: 50000
+    missing_class: 8
+    initial_examples: 5000
+    classifier_seed: 20260921
+    classifier_steps: 1500
+    classifier_batch_size: 128
+    classifier_min_accuracy: 0.98
+    flow_model:
+      dimension: 784
+      hidden: 256
+      layers: 6
+    diffusion_model:
+      hidden: 512
+      time_dim: 64
+      diffusion_steps: 50
+    teacher_training:
+      max_steps: 5000
+      batch_size: 128
+      learning_rate: 0.0002
+    initial_training:
+      max_steps: 750
+      batch_size: 128
+      learning_rate: 0.0002
+    round_training:
+      max_steps: 1000
+      batch_size: 128
+      learning_rate: 0.0002
+
+studies:
+  - name: gpt_boundary
+    backend: teacher_lm
+    conditions: &boundary_conditions
+      - name: constant_20pct
+        schedule: {kind: constant_fraction, fraction: 0.2}
+      - name: divergent_log
+        schedule: {kind: log_fraction, power: 1.0, initial_fraction: 0.2}
+      - name: convergent_log_squared
+        schedule: {kind: log_fraction, power: 2.0, initial_fraction: 0.2}
+      - name: finite_power_half
+        schedule: {kind: power_fraction, power: 0.5, initial_fraction: 0.2}
+
+  - name: gpt_schedule_sweep
+    backend: teacher_lm
+    conditions:
+      - name: constant_05pct
+        schedule: {kind: constant_fraction, fraction: 0.05}
+      - name: constant_10pct
+        schedule: {kind: constant_fraction, fraction: 0.1}
+      - name: constant_20pct
+        schedule: {kind: constant_fraction, fraction: 0.2}
+      - name: constant_40pct
+        schedule: {kind: constant_fraction, fraction: 0.4}
+      - name: log_power_05
+        schedule: {kind: log_fraction, power: 0.5, initial_fraction: 0.2}
+      - name: log_power_10
+        schedule: {kind: log_fraction, power: 1.0, initial_fraction: 0.2}
+      - name: log_power_15
+        schedule: {kind: log_fraction, power: 1.5, initial_fraction: 0.2}
+      - name: log_power_20
+        schedule: {kind: log_fraction, power: 2.0, initial_fraction: 0.2}
+      - name: polynomial_half
+        schedule: {kind: power_fraction, power: 0.5, initial_fraction: 0.2}
+      - name: exponential_decay
+        schedule: {kind: exponential_fraction, decay: 0.8, initial_fraction: 0.2}
+      - name: matched_front
+        schedule: {kind: front_loaded, total_real: 512}
+      - name: matched_back
+        schedule: {kind: back_loaded, total_real: 512}
+
+  - name: gpt_same_budget_timing
+    backend: teacher_lm
+    conditions:
+      - name: front_loaded
+        schedule: {kind: front_loaded, total_real: 512, block: true}
+      - name: uniform
+        schedule: {kind: uniform_budget, total_real: 512}
+      - name: back_loaded
+        schedule: {kind: back_loaded, total_real: 512, block: true}
+
+  - name: gpt_misspecified
+    backend: teacher_lm
+    overrides:
+      lm:
+        teacher_model: &large_lm
+          n_embd: 256
+          n_layer: 4
+          n_head: 8
+          dropout: 0.0
+        student_model: *small_lm
+      misspecified:
+        enabled: true
+    conditions: *boundary_conditions
+
+  - name: gpt_real_corpus
+    backend: real_corpus_lm
+    conditions: *boundary_conditions
+
+  - name: gpt_model_scale
+    backend: teacher_lm
+    conditions:
+      - name: small_constant
+        schedule: {kind: constant_fraction, fraction: 0.2}
+      - name: small_log_squared
+        schedule: {kind: log_fraction, power: 2.0, initial_fraction: 0.2}
+      - name: large_constant
+        schedule: {kind: constant_fraction, fraction: 0.2}
+        overrides:
+          lm: {teacher_model: *large_lm, student_model: *large_lm}
+      - name: large_log_squared
+        schedule: {kind: log_fraction, power: 2.0, initial_fraction: 0.2}
+        overrides:
+          lm: {teacher_model: *large_lm, student_model: *large_lm}
+
+  - name: flow_exact_likelihood
+    backend: flow_teacher
+    conditions:
+      - name: constant_20pct
+        schedule: {kind: constant_fraction, fraction: 0.2}
+      - name: divergent_log
+        schedule: {kind: log_fraction, power: 1.0, initial_fraction: 0.2}
+      - name: convergent_log_squared
+        schedule: {kind: log_fraction, power: 2.0, initial_fraction: 0.2}
+
+  - name: flow_mode_recovery
+    backend: flow_mode_recovery
+    conditions:
+      - name: constant_20pct
+        schedule: {kind: constant_fraction, fraction: 0.2}
+      - name: divergent_log
+        schedule: {kind: log_fraction, power: 1.0, initial_fraction: 0.2}
+      - name: convergent_log_squared
+        schedule: {kind: log_fraction, power: 2.0, initial_fraction: 0.2}
+
+  - name: diffusion_mode_recovery
+    backend: diffusion_mode_recovery
+    rounds: 20
+    conditions:
+      - name: constant_20pct
+        schedule: {kind: constant_fraction, fraction: 0.2}
+      - name: divergent_log
+        schedule: {kind: log_fraction, power: 1.0, initial_fraction: 0.2}
+      - name: convergent_log_squared
+        schedule: {kind: log_fraction, power: 2.0, initial_fraction: 0.2}

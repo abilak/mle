@@ -25,3 +25,34 @@ This controls downstream fine-tuning leakage. It cannot prove that a pretrained 
 ## Generated artifacts
 
 `data/processed/code_manifest.json` and `math_manifest.json` record row counts, library runtime, and dataset fingerprints. Processed JSONL records include source dataset, task ID, license, prompt, available human solutions, tests, inferred skill group, and original metadata. Raw and processed data are intentionally ignored by Git; rerun preparation to reproduce them.
+
+## Neural language-model extension
+
+[TinyStories](https://huggingface.co/datasets/roneneldan/TinyStories) supplies the corpus
+used to pretrain the frozen neural teacher and the independent real-corpus replication. The
+dataset card identifies English text generation, approximately 1M-10M records, and the
+CDLA-Sharing-1.0 license. The implementation uses the official train and validation splits,
+the GPT-2 tokenizer, and at most 100,000/10,000 records by default.
+
+Each record becomes a fixed 128-token sequence: a BOS token, truncated story tokens, and EOS
+padding when needed. The preparation command stores integer token arrays, tokenizer files,
+SHA-256 digests, row counts, sequence length, source name, and a combined fingerprint under
+`data/generative/`. The frozen teacher sees only the prepared training array. The real-corpus
+endpoint is calculated only on the separately prepared validation array.
+
+Teacher-generated train and test sequences are content-addressed by teacher checkpoint,
+sample count, length, and seed. A student never trains on the fixed teacher test set.
+
+## Neural vision extension
+
+[MNIST](https://pytorch.org/vision/stable/generated/torchvision.datasets.MNIST.html) is the
+default vision dataset; `FashionMNIST` can be selected without changing code. Torchvision
+downloads the official 60,000-example training and 10,000-example test partitions. Training
+images fit the flow/diffusion models and their initial missing-mode checkpoints. Test images
+are used only to validate the frozen classifier and construct balanced reference features.
+
+The mode-recovery real-data stream is deterministically balanced across all ten labels. The
+initial model excludes the preregistered class 8. A classifier trained once on the training
+partition must exceed the configured test-accuracy threshold before mode results are
+accepted. Generated samples, predicted class distributions, and classifier features are
+stored; test labels never influence training or schedule selection.

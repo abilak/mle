@@ -1,0 +1,57 @@
+project:
+  name: generative_protocol_smoke
+  artifact_root: artifacts/generative_smoke
+
+data:
+  dataset: roneneldan/TinyStories
+  tokenizer: gpt2
+  sequence_length: 24
+  output_dir: data/generative
+  vision_dataset: MNIST
+  vision_data_dir: data/generative/vision
+
+defaults:
+  backend: analytic_markov
+  rounds: 5
+  batch_size: 24
+  seeds: [11, 23]
+  analytic:
+    vocabulary_size: 10
+    teacher_seed: 17
+    initial_severity: 0.65
+    smoothing: 0.25
+  evaluation: {}
+
+studies:
+  - name: gpt_boundary
+    backend: analytic_markov
+    conditions:
+      - name: constant_20pct
+        schedule: {kind: constant_fraction, fraction: 0.2}
+      - name: divergent_log
+        schedule: {kind: log_fraction, power: 1.0, initial_fraction: 0.2}
+      - name: convergent_log_squared
+        schedule: {kind: log_fraction, power: 2.0, initial_fraction: 0.2}
+
+  - name: gpt_schedule_sweep
+    backend: analytic_markov
+    conditions:
+      - name: constant_10pct
+        schedule: {kind: constant_fraction, fraction: 0.1}
+      - name: constant_20pct
+        schedule: {kind: constant_fraction, fraction: 0.2}
+      - name: constant_40pct
+        schedule: {kind: constant_fraction, fraction: 0.4}
+      - name: exponential
+        schedule: {kind: exponential_fraction, decay: 0.7, initial_fraction: 0.2}
+
+  - name: gpt_same_budget_timing
+    backend: analytic_markov
+    conditions:
+      - name: front_loaded
+        schedule: {kind: front_loaded, total_real: 24, block: true}
+      - name: uniform
+        schedule: {kind: uniform_budget, total_real: 24}
+      - name: back_loaded
+        schedule: {kind: back_loaded, total_real: 24, block: true}
+

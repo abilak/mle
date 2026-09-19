@@ -6,7 +6,7 @@ scientific results.
 
 ## Completed on the implementation host
 
-- All 23 automated tests pass.
+- All 46 automated tests pass.
 - All ten experiment configurations plus the smoke configuration validate.
 - The full materialized dry plan contains 485 unique run IDs. Every schedule has the
   required length, nonnegative integer counts, and no run asks for more than the 4,001
@@ -15,6 +15,14 @@ scientific results.
   restart/resume checks, paired-effect analysis, and figure generation.
 - A real tiny Hugging Face causal model completed one masked-prompt training step and a
   chat-template-aware generation pass through the production backend.
+- The neural-generative 120-run plan materializes with unique IDs across all nine requested
+  study families. The 20-run analytic smoke plan completed end to end, including atomic
+  rounds, idempotent resume, aggregation, paired effects, `G_T` rank analysis, and figures.
+- A real randomly initialized tiny GPT completed an optimizer step, untruncated
+  autoregressive sampling, and exact sequence likelihood scoring. A real RealNVP completed
+  an optimizer step, sampling, and likelihood scoring. A real tiny DDPM completed an
+  optimizer step and reverse-diffusion sampling. These were implementation checks, not
+  scientific experiment results.
 - APPS verification fixtures cover both `class Solution` call-based tasks with JSON-encoded
   arguments and stdin tasks whose inputs/outputs are stored as line arrays.
 - All four full paper-scale simulation groups completed with seed `20260821`, producing
@@ -41,10 +49,14 @@ Machine-readable values are in `results/theory_full/manifest.json` and
 
 ## Not run on this host
 
-The full language-model sweep was not executed here. This machine has no CUDA or MPS
+The full language-model and neural-generative sweeps were not executed here. This machine has no CUDA or MPS
 accelerator, Docker is not installed, and the optional PEFT/EvalPlus packages are not in
 the active environment. Docker is an intentional prerequisite: generated programs must
 not be run directly on the host. Install `.[llm,dev]`, provide Docker and GPU workers,
 complete Phase 1, freeze its calibration, re-plan, and then submit the array as described
 in `README.md` and `docs/COMPUTE.md`.
 
+For the neural-generative extension, install `.[generative,dev]`, prepare TinyStories, run
+the generative preflight on the target CUDA worker, and materialize
+`configs/generative/full.yaml`. The passing analytic and one-step neural checks establish
+execution coverage only; they do not establish any reported neural schedule effect.
