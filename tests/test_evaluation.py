@@ -91,6 +91,10 @@ def test_evalplus_container_is_offline_and_receives_local_dataset(tmp_path, monk
 
 
 def test_evalplus_oom_retry_raises_memory_and_reduces_parallelism(tmp_path, monkeypatch):
+    monkeypatch.delenv("GROUNDING_MLE_EVALPLUS_MEMORY", raising=False)
+    monkeypatch.delenv("GROUNDING_MLE_EVALPLUS_PARALLEL", raising=False)
+    monkeypatch.delenv("GROUNDING_MLE_EVALPLUS_OOM_MEMORY", raising=False)
+    monkeypatch.delenv("GROUNDING_MLE_EVALPLUS_OOM_PARALLEL", raising=False)
     output = tmp_path / "evaluation" / "round_00" / "mbpp"
     output.mkdir(parents=True)
     samples = output / "mbpp_samples.jsonl"

@@ -112,7 +112,6 @@ def runtime_manifest() -> dict[str, Any]:
             "datasets",
             "peft",
             "evalplus",
-            "torchvision",
         ]:
             try:
                 packages[name] = version(name)

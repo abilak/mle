@@ -95,8 +95,9 @@ def prepare_generative_data(
 ) -> dict[str, Any]:
     """Materialize deterministic fixed-length TinyStories token arrays.
 
-    Vision datasets are intentionally downloaded by torchvision on first use;
-    this command prepares the shared language-model corpus and tokenizer.
+    Vision datasets are intentionally downloaded by the checksum-verified IDX
+    loader on first use; this command prepares the shared language-model corpus
+    and tokenizer.
     """
 
     config = load_generative_config(config_path)

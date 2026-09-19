@@ -45,11 +45,13 @@ sample count, length, and seed. A student never trains on the fixed teacher test
 
 ## Neural vision extension
 
-[MNIST](https://pytorch.org/vision/stable/generated/torchvision.datasets.MNIST.html) is the
-default vision dataset; `FashionMNIST` can be selected without changing code. Torchvision
-downloads the official 60,000-example training and 10,000-example test partitions. Training
-images fit the flow/diffusion models and their initial missing-mode checkpoints. Test images
-are used only to validate the frozen classifier and construct balanced reference features.
+[MNIST](https://storage.googleapis.com/cvdf-datasets/mnist/) is the default vision dataset;
+`FashionMNIST` can be selected without changing code. The project downloads the original IDX
+files into the configured vision-data directory and verifies every file against its published
+MD5 checksum. No `torchvision` binary extension is required. The official 60,000-example
+training and 10,000-example test partitions are kept separate. Training images fit the
+flow/diffusion models and their initial missing-mode checkpoints. Test images are used only to
+validate the frozen classifier and construct balanced reference features.
 
 The mode-recovery real-data stream is deterministically balanced across all ten labels. The
 initial model excludes the preregistered class 8. A classifier trained once on the training

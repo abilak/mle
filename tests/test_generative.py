@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import gzip
 import json
+import struct
 
 import numpy as np
 import pytest
@@ -18,6 +20,7 @@ from grounding_mle.generative_planning import (
 )
 from grounding_mle.generative_runner import run_generative_planned
 from grounding_mle.generative_schedules import materialize_generative_schedule
+from grounding_mle.generative_vision import _read_idx_images, _read_idx_labels
 
 
 def test_log_schedule_starts_at_anchor_and_decays() -> None:
@@ -156,6 +159,22 @@ def test_analytic_results_feed_analysis(tmp_path) -> None:
     assert saved["kind"] == "grounding-mle-generative-analysis-v1"
 
 
+def test_idx_vision_loader_parses_images_and_labels(tmp_path) -> None:
+    images_path = tmp_path / "images.gz"
+    labels_path = tmp_path / "labels.gz"
+    images = np.arange(12, dtype=np.uint8).reshape(2, 1, 2, 3)
+    labels = np.asarray([4, 9], dtype=np.uint8)
+    with gzip.open(images_path, "wb") as handle:
+        handle.write(struct.pack(">IIII", 2051, 2, 2, 3))
+        handle.write(images.tobytes())
+    with gzip.open(labels_path, "wb") as handle:
+        handle.write(struct.pack(">II", 2049, 2))
+        handle.write(labels.tobytes())
+
+    assert np.array_equal(_read_idx_images(images_path), images)
+    assert np.array_equal(_read_idx_labels(labels_path), labels)
+
+
 def test_tiny_neural_lm_train_sample_and_score(tmp_path) -> None:
     pytest.importorskip("torch")
     pytest.importorskip("transformers")
@@ -194,7 +213,6 @@ def test_tiny_neural_lm_train_sample_and_score(tmp_path) -> None:
 
 def test_tiny_flow_train_sample_and_score(tmp_path) -> None:
     pytest.importorskip("torch")
-    pytest.importorskip("torchvision")
     from grounding_mle.generative_vision import (
         flow_log_probabilities,
         sample_flow,
@@ -218,7 +236,6 @@ def test_tiny_flow_train_sample_and_score(tmp_path) -> None:
 
 def test_tiny_diffusion_train_and_sample(tmp_path) -> None:
     pytest.importorskip("torch")
-    pytest.importorskip("torchvision")
     from grounding_mle.generative_vision import sample_diffusion, train_diffusion
 
     images = np.random.default_rng(13).random((4, 1, 28, 28), dtype=np.float32)

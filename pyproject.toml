@@ -33,7 +33,6 @@ generative = [
   "datasets>=3.0,<5",
   "huggingface-hub>=0.35,<1",
   "torch>=2.4,<3",
-  "torchvision>=0.19,<1",
   "transformers>=4.55,<5",
 ]
 dev = [

@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import gc
+import gzip
+import hashlib
 import math
+import os
 import shutil
+import struct
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -12,20 +16,19 @@ from .generative_data import exclusive_file_lock
 from .io import atomic_write_json, read_json, seed_everything, stable_hash
 
 
-def _dependencies() -> tuple[Any, Any, Any]:
+def _dependencies() -> tuple[Any, Any]:
     try:
         import torch
         import torch.nn as nn
-        import torchvision
     except ImportError as exc:
         raise RuntimeError(
-            "Install the generative extra (torch and torchvision) for vision experiments"
+            "Install the generative extra (torch) for vision experiments"
         ) from exc
-    return torch, nn, torchvision
+    return torch, nn
 
 
 def _device() -> str:
-    torch, _, _ = _dependencies()
+    torch, _ = _dependencies()
     if torch.cuda.is_available():
         return "cuda"
     mps = getattr(torch.backends, "mps", None)
@@ -35,7 +38,7 @@ def _device() -> str:
 
 
 def _clear() -> None:
-    torch, _, _ = _dependencies()
+    torch, _ = _dependencies()
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
@@ -49,20 +52,116 @@ def _clear() -> None:
         torch.mps.empty_cache()
 
 
-def load_mnist_arrays(config: Mapping[str, Any]) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    _, _, torchvision = _dependencies()
+_VISION_DATASETS = {
+    "MNIST": {
+        "base_url": "https://storage.googleapis.com/cvdf-datasets/mnist",
+        "files": {
+            "train-images-idx3-ubyte.gz": "f68b3c2dcbeaaa9fbdd348bbdeb94873",
+            "train-labels-idx1-ubyte.gz": "d53e105ee54ea40749a09fcbcd1e9432",
+            "t10k-images-idx3-ubyte.gz": "9fb629c4189551a2d022fa330f9573f3",
+            "t10k-labels-idx1-ubyte.gz": "ec29112dd5afa0611ce80d1b7f02629c",
+        },
+    },
+    "FashionMNIST": {
+        "base_url": (
+            "https://raw.githubusercontent.com/zalandoresearch/"
+            "fashion-mnist/master/data/fashion"
+        ),
+        "files": {
+            "train-images-idx3-ubyte.gz": "8d4fb7e6c68d591d4c3dfef9ec88bf0d",
+            "train-labels-idx1-ubyte.gz": "25c81989df183df01b3e8a0aad5dffbe",
+            "t10k-images-idx3-ubyte.gz": "bef4ecab320f06d8554ea6380940ec79",
+            "t10k-labels-idx1-ubyte.gz": "bb300cfdad3c16e7a12a480ee83cd310",
+        },
+    },
+}
+
+
+def _md5(path: Path) -> str:
+    digest = hashlib.md5(usedforsecurity=False)
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _download_idx_file(url: str, destination: Path, expected_md5: str) -> None:
+    if destination.is_file() and _md5(destination) == expected_md5:
+        return
+    try:
+        import requests
+    except ImportError as exc:
+        raise RuntimeError("requests is required to download the vision datasets") from exc
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_name(f".{destination.name}.part")
+    temporary.unlink(missing_ok=True)
+    try:
+        with requests.get(url, stream=True, timeout=(15, 180)) as response:
+            response.raise_for_status()
+            with temporary.open("wb") as handle:
+                for chunk in response.iter_content(chunk_size=1024 * 1024):
+                    if chunk:
+                        handle.write(chunk)
+                handle.flush()
+                os.fsync(handle.fileno())
+        actual_md5 = _md5(temporary)
+        if actual_md5 != expected_md5:
+            raise RuntimeError(
+                f"Checksum mismatch for {url}: expected {expected_md5}, got {actual_md5}"
+            )
+        os.replace(temporary, destination)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _read_idx_images(path: Path) -> np.ndarray:
+    with gzip.open(path, "rb") as handle:
+        magic, count, rows, columns = struct.unpack(">IIII", handle.read(16))
+        if magic != 2051:
+            raise ValueError(f"Invalid IDX image magic number in {path}: {magic}")
+        values = np.frombuffer(handle.read(), dtype=np.uint8)
+    expected = count * rows * columns
+    if values.size != expected:
+        raise ValueError(f"Truncated IDX image file {path}: expected {expected} bytes")
+    return values.reshape(count, 1, rows, columns)
+
+
+def _read_idx_labels(path: Path) -> np.ndarray:
+    with gzip.open(path, "rb") as handle:
+        magic, count = struct.unpack(">II", handle.read(8))
+        if magic != 2049:
+            raise ValueError(f"Invalid IDX label magic number in {path}: {magic}")
+        values = np.frombuffer(handle.read(), dtype=np.uint8)
+    if values.size != count:
+        raise ValueError(f"Truncated IDX label file {path}: expected {count} bytes")
+    return values.astype(np.int64, copy=False)
+
+
+def load_mnist_arrays(
+    config: Mapping[str, Any],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     dataset_name = str(config.get("vision_dataset", "MNIST"))
-    if dataset_name not in {"MNIST", "FashionMNIST"}:
+    if dataset_name not in _VISION_DATASETS:
         raise ValueError("vision_dataset must be MNIST or FashionMNIST")
-    dataset_class = getattr(torchvision.datasets, dataset_name)
-    root = str(config.get("vision_data_dir", "data/generative/vision"))
-    with exclusive_file_lock(Path(root) / f".{dataset_name}.lock"):
-        train = dataset_class(root=root, train=True, download=True)
-        test = dataset_class(root=root, train=False, download=True)
-    train_images = np.asarray(train.data, dtype=np.float32)[:, None] / 255.0
-    test_images = np.asarray(test.data, dtype=np.float32)[:, None] / 255.0
-    train_labels = np.asarray(train.targets, dtype=np.int64)
-    test_labels = np.asarray(test.targets, dtype=np.int64)
+    metadata = _VISION_DATASETS[dataset_name]
+    root = Path(str(config.get("vision_data_dir", "data/generative/vision")))
+    raw = root / dataset_name / "raw"
+    with exclusive_file_lock(root / f".{dataset_name}.lock"):
+        for filename, expected_md5 in metadata["files"].items():
+            _download_idx_file(
+                f"{metadata['base_url']}/{filename}", raw / filename, expected_md5
+            )
+    train_images = _read_idx_images(raw / "train-images-idx3-ubyte.gz").astype(
+        np.float32
+    ) / 255.0
+    test_images = _read_idx_images(raw / "t10k-images-idx3-ubyte.gz").astype(
+        np.float32
+    ) / 255.0
+    train_labels = _read_idx_labels(raw / "train-labels-idx1-ubyte.gz")
+    test_labels = _read_idx_labels(raw / "t10k-labels-idx1-ubyte.gz")
+    if len(train_images) != len(train_labels) or len(test_images) != len(test_labels):
+        raise ValueError(f"Image/label count mismatch in the downloaded {dataset_name} data")
     return train_images, train_labels, test_images, test_labels
 
 
@@ -90,7 +189,7 @@ def inverse_logit(values: np.ndarray) -> np.ndarray:
 
 
 def _flow_classes() -> tuple[type, type]:
-    torch, nn, _ = _dependencies()
+    torch, nn = _dependencies()
 
     class Coupling(nn.Module):
         def __init__(self, dimension: int, hidden: int, mask: Any):
@@ -160,7 +259,7 @@ def _make_flow(specification: Mapping[str, Any]) -> Any:
 
 
 def save_flow(model: Any, target: str | Path, summary: Mapping[str, Any]) -> None:
-    torch, _, _ = _dependencies()
+    torch, _ = _dependencies()
     destination = Path(target)
     temporary = destination.with_name(f".{destination.name}.tmp-{stable_hash(summary, 8)}")
     if temporary.exists():
@@ -174,7 +273,7 @@ def save_flow(model: Any, target: str | Path, summary: Mapping[str, Any]) -> Non
 
 
 def load_flow(checkpoint: str | Path) -> Any:
-    torch, _, _ = _dependencies()
+    torch, _ = _dependencies()
     summary = read_json(Path(checkpoint) / "training_summary.json")
     model = _make_flow(summary["specification"])
     model.load_state_dict(torch.load(Path(checkpoint) / "model.pt", map_location="cpu", weights_only=True))
@@ -192,7 +291,7 @@ def train_flow(
 ) -> dict[str, Any]:
     if len(transformed_images) == 0:
         raise ValueError("Cannot train a flow on no images")
-    torch, _, _ = _dependencies()
+    torch, _ = _dependencies()
     seed_everything(seed)
     device = _device()
     model = load_flow(source_checkpoint) if source_checkpoint else _make_flow(specification)
@@ -236,7 +335,7 @@ def sample_flow(checkpoint: str | Path, count: int, seed: int, batch_size: int =
         summary = read_json(Path(checkpoint) / "training_summary.json")
         dimension = int(summary["specification"]["dimension"])
         return np.empty((0, dimension), dtype=np.float32)
-    torch, _, _ = _dependencies()
+    torch, _ = _dependencies()
     seed_everything(seed)
     device = _device()
     model = load_flow(checkpoint).to(device).eval()
@@ -252,7 +351,7 @@ def sample_flow(checkpoint: str | Path, count: int, seed: int, batch_size: int =
 def flow_log_probabilities(
     checkpoint: str | Path, values: np.ndarray, batch_size: int = 256
 ) -> np.ndarray:
-    torch, _, _ = _dependencies()
+    torch, _ = _dependencies()
     device = _device()
     model = load_flow(checkpoint).to(device).eval()
     flat = values.reshape((len(values), -1))
@@ -294,7 +393,7 @@ def ensure_flow_teacher(config: Mapping[str, Any], artifact_root: str | Path) ->
 
 
 def _classifier_class() -> type:
-    _, nn, _ = _dependencies()
+    _, nn = _dependencies()
 
     class MNISTClassifier(nn.Module):
         def __init__(self):
@@ -318,7 +417,7 @@ def _classifier_class() -> type:
 
 
 def ensure_mnist_classifier(config: Mapping[str, Any], artifact_root: str | Path) -> Path:
-    torch, _, _ = _dependencies()
+    torch, _ = _dependencies()
     identity = {
         "dataset": config["data"].get("vision_dataset", "MNIST"),
         "seed": int(config["vision"].get("classifier_seed", 20260921)),
@@ -366,7 +465,7 @@ def classify_images(
     images: np.ndarray,
     batch_size: int = 256,
 ) -> tuple[np.ndarray, np.ndarray]:
-    torch, _, _ = _dependencies()
+    torch, _ = _dependencies()
     device = _device()
     classifier = _classifier_class()().to(device)
     classifier.load_state_dict(
@@ -414,7 +513,7 @@ def frechet_feature_distance(reference: np.ndarray, candidate: np.ndarray) -> fl
 
 
 def _diffusion_class() -> type:
-    torch, nn, _ = _dependencies()
+    torch, nn = _dependencies()
 
     class TinyDenoiser(nn.Module):
         def __init__(self, hidden: int = 512, time_dim: int = 64):
@@ -446,7 +545,7 @@ def _diffusion_class() -> type:
 
 
 def _diffusion_schedule(steps: int, device: str) -> tuple[Any, Any, Any]:
-    torch, _, _ = _dependencies()
+    torch, _ = _dependencies()
     betas = torch.linspace(1e-4, 0.02, steps, device=device)
     alphas = 1 - betas
     cumulative = torch.cumprod(alphas, dim=0)
@@ -454,7 +553,7 @@ def _diffusion_schedule(steps: int, device: str) -> tuple[Any, Any, Any]:
 
 
 def save_diffusion(model: Any, target: str | Path, summary: Mapping[str, Any]) -> None:
-    torch, _, _ = _dependencies()
+    torch, _ = _dependencies()
     destination = Path(target)
     temporary = destination.with_name(f".{destination.name}.tmp-{stable_hash(summary, 8)}")
     if temporary.exists():
@@ -468,7 +567,7 @@ def save_diffusion(model: Any, target: str | Path, summary: Mapping[str, Any]) -
 
 
 def load_diffusion(checkpoint: str | Path) -> tuple[Any, dict[str, Any]]:
-    torch, _, _ = _dependencies()
+    torch, _ = _dependencies()
     summary = read_json(Path(checkpoint) / "training_summary.json")
     model = _diffusion_class()(
         hidden=int(summary["model"]["hidden"]), time_dim=int(summary["model"]["time_dim"])
@@ -488,7 +587,7 @@ def train_diffusion(
 ) -> dict[str, Any]:
     if len(images) == 0:
         raise ValueError("Cannot train diffusion on no images")
-    torch, _, _ = _dependencies()
+    torch, _ = _dependencies()
     seed_everything(seed)
     device = _device()
     model = (
@@ -549,7 +648,7 @@ def sample_diffusion(
 ) -> np.ndarray:
     if count == 0:
         return np.empty((0, 1, 28, 28), dtype=np.float32)
-    torch, _, _ = _dependencies()
+    torch, _ = _dependencies()
     seed_everything(seed)
     device = _device()
     model, summary = load_diffusion(checkpoint)
