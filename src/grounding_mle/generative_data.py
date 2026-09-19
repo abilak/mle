@@ -43,12 +43,12 @@ def atomic_save_numpy(path: str | Path, array: np.ndarray) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def _text_value(record: Mapping[str, Any], candidates: Sequence[str]) -> str:
+def _text_value(record: Mapping[str, Any], candidates: Sequence[str]) -> str | None:
     for field in candidates:
         value = record.get(field)
         if isinstance(value, str) and value.strip():
             return value.strip()
-    raise ValueError(f"Dataset row has no text in fields {list(candidates)}")
+    return None
 
 
 def _tokenize_records(
@@ -58,6 +58,7 @@ def _tokenize_records(
     sequence_length: int,
     maximum: int,
     text_fields: Sequence[str],
+    split_name: str = "dataset",
 ) -> np.ndarray:
     bos_id = tokenizer.bos_token_id
     if bos_id is None:
@@ -70,8 +71,16 @@ def _tokenize_records(
     if pad_id is None:
         raise ValueError("The tokenizer needs an EOS or padding token")
     rows: list[list[int]] = []
+    skipped = 0
+    progress_interval = min(10_000, maximum)
     for record in records:
+        if not isinstance(record, Mapping):
+            skipped += 1
+            continue
         text = _text_value(record, text_fields)
+        if text is None:
+            skipped += 1
+            continue
         tokens = tokenizer(
             text,
             add_special_tokens=False,
@@ -81,10 +90,20 @@ def _tokenize_records(
         sequence = [int(bos_id)] + [int(value) for value in tokens]
         sequence.extend([int(pad_id)] * (sequence_length - len(sequence)))
         rows.append(sequence[:sequence_length])
+        if progress_interval and len(rows) % progress_interval == 0:
+            print(
+                f"{split_name}: tokenized {len(rows):,}/{maximum:,} usable sequences",
+                flush=True,
+            )
         if len(rows) >= maximum:
             break
     if not rows:
-        raise ValueError("No usable text records were found")
+        raise ValueError(
+            f"No usable text records were found; skipped {skipped} rows without "
+            f"non-empty fields among {list(text_fields)}"
+        )
+    if skipped:
+        print(f"Skipped {skipped} dataset rows without usable text", flush=True)
     return np.asarray(rows, dtype=np.int32)
 
 
@@ -160,6 +179,7 @@ def prepare_generative_data(
         sequence_length=sequence_length,
         maximum=int(data.get("train_sequences", 100_000)),
         text_fields=fields,
+        split_name=train_split,
     )
     validation = _tokenize_records(
         validation_records,
@@ -167,6 +187,7 @@ def prepare_generative_data(
         sequence_length=sequence_length,
         maximum=int(data.get("validation_sequences", 10_000)),
         text_fields=fields,
+        split_name=validation_split,
     )
     train_path = output / "train.npy"
     validation_path = output / "validation.npy"

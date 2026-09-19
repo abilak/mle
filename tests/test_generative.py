@@ -13,6 +13,7 @@ from grounding_mle.generative_analytic import (
     markov_metrics,
     teacher_transition,
 )
+from grounding_mle.generative_data import _tokenize_records
 from grounding_mle.generative_planning import (
     GenerativePlannedRun,
     load_generative_config,
@@ -173,6 +174,27 @@ def test_idx_vision_loader_parses_images_and_labels(tmp_path) -> None:
 
     assert np.array_equal(_read_idx_images(images_path), images)
     assert np.array_equal(_read_idx_labels(labels_path), labels)
+
+
+def test_text_preparation_skips_empty_dataset_rows() -> None:
+    class TinyTokenizer:
+        bos_token_id = 1
+        eos_token_id = 2
+        pad_token_id = 0
+
+        def __call__(self, text, **kwargs):
+            assert text
+            return {"input_ids": [3, 4]}
+
+    result = _tokenize_records(
+        [{"text": ""}, {"other": "missing"}, {"text": "first"}, {"story": "second"}],
+        TinyTokenizer(),
+        sequence_length=5,
+        maximum=2,
+        text_fields=["text", "story"],
+    )
+
+    assert result.tolist() == [[1, 3, 4, 2, 2], [1, 3, 4, 2, 2]]
 
 
 def test_tiny_neural_lm_train_sample_and_score(tmp_path) -> None:
