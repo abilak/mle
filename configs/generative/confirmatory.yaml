@@ -1,0 +1,302 @@
+project:
+  # Preserve the original project identity so matching completed checkpoints resume.
+  name: neural_generative_schedule_stress_tests
+  artifact_root: artifacts/generative
+
+data:
+  dataset: roneneldan/TinyStories
+  streaming: true
+  tokenizer: gpt2
+  text_fields: [text, story]
+  train_split: train
+  validation_split: validation
+  sequence_length: 128
+  train_sequences: 100000
+  validation_sequences: 10000
+  output_dir: data/generative
+  vision_dataset: MNIST
+  vision_data_dir: data/generative/vision
+
+# Keep these defaults byte-for-byte equivalent to full.yaml. In particular, do not replace
+# defaults.seeds with the confirmatory seed set: run identity includes the resolved defaults,
+# so doing that would prevent the existing 11/23/37 checkpoints from being reused.
+defaults:
+  backend: teacher_lm
+  rounds: 20
+  batch_size: 128
+  seeds: [11, 23, 37]
+  lm:
+    teacher_seed: 20260919
+    teacher_pretrain_sequences: 50000
+    teacher_model: &small_lm
+      n_embd: 128
+      n_layer: 4
+      n_head: 4
+      dropout: 0.0
+    student_model: *small_lm
+    teacher_training:
+      max_steps: 2000
+      batch_size: 32
+      gradient_accumulation_steps: 1
+      learning_rate: 0.0003
+      weight_decay: 0.01
+      mixed_precision: true
+    initial_examples: 512
+    initial_training:
+      max_steps: 100
+      batch_size: 32
+      learning_rate: 0.0003
+      weight_decay: 0.01
+      mixed_precision: true
+    round_training:
+      max_steps: 300
+      batch_size: 32
+      learning_rate: 0.0003
+      weight_decay: 0.01
+      mixed_precision: true
+  evaluation:
+    test_sequences: 5000
+    diagnostic_samples: 512
+    likelihood_batch_size: 32
+    generation_batch_size: 32
+    test_seed: 20260920
+    vision_test_samples: 5000
+    vision_diagnostic_samples: 2000
+  misspecified:
+    enabled: false
+    reference_examples: 20000
+    reference_seed: 20260922
+    reference_training:
+      max_steps: 2000
+      batch_size: 32
+      learning_rate: 0.0003
+      weight_decay: 0.01
+      mixed_precision: true
+  vision:
+    teacher_seed: 20260919
+    teacher_examples: 50000
+    missing_class: 8
+    initial_examples: 5000
+    classifier_seed: 20260921
+    classifier_steps: 1500
+    classifier_batch_size: 128
+    classifier_min_accuracy: 0.98
+    flow_model:
+      dimension: 784
+      hidden: 256
+      layers: 6
+    diffusion_model:
+      hidden: 512
+      time_dim: 64
+      diffusion_steps: 50
+    teacher_training:
+      max_steps: 5000
+      batch_size: 128
+      learning_rate: 0.0002
+    initial_training:
+      max_steps: 750
+      batch_size: 128
+      learning_rate: 0.0002
+    round_training:
+      max_steps: 1000
+      batch_size: 128
+      learning_rate: 0.0002
+
+confirmatory_analysis:
+  version: 1
+  frozen_before_new_runs: true
+  alpha: 0.05
+  # Seeds 11/23/37 were inspected in the exploratory analysis and are therefore
+  # excluded from every confirmatory p-value. They remain in estimation_seeds so
+  # their completed runs can be reused in explicitly descriptive pooled figures.
+  planned_seeds: &confirmatory_seeds [41, 53, 67, 79, 83, 97, 109, 127, 139, 151]
+  estimation_seeds: &estimation_seeds [11, 23, 37, 41, 53, 67, 79, 83, 97, 109, 127, 139, 151]
+  contrasts:
+    - id: primary_gpt_boundary
+      family: primary
+      experiment: gpt_boundary
+      left: divergent_log
+      right: convergent_log_squared
+      expected_favored: divergent_log
+    - id: primary_matched_timing
+      family: primary
+      experiment: gpt_same_budget_timing
+      left: front_loaded
+      right: back_loaded
+      expected_favored: front_loaded
+    - id: primary_exact_flow
+      family: primary
+      experiment: flow_exact_likelihood
+      left: divergent_log
+      right: convergent_log_squared
+      expected_favored: divergent_log
+    - id: secondary_gpt_constant
+      family: secondary_robustness
+      experiment: gpt_boundary
+      left: constant_20pct
+      right: convergent_log_squared
+      expected_favored: constant_20pct
+    - id: secondary_misspecified
+      family: secondary_robustness
+      experiment: gpt_misspecified
+      left: constant_20pct
+      right: convergent_log_squared
+      expected_favored: constant_20pct
+    - id: secondary_real_corpus
+      family: secondary_robustness
+      experiment: gpt_real_corpus
+      left: constant_20pct
+      right: convergent_log_squared
+      expected_favored: constant_20pct
+    - id: secondary_large_model
+      family: secondary_robustness
+      experiment: gpt_model_scale
+      left: large_constant
+      right: large_log_squared
+      expected_favored: large_constant
+    - id: secondary_flow_constant
+      family: secondary_robustness
+      experiment: flow_exact_likelihood
+      left: constant_20pct
+      right: convergent_log_squared
+      expected_favored: constant_20pct
+  fixed_budget_timing:
+    experiment: gpt_same_budget_timing
+    conditions:
+      - front_loaded
+      - gradual_front
+      - alternating
+      - bursty
+      - middle_loaded
+      - uniform
+      - gradual_back
+      - back_loaded
+    planned_seeds: *confirmatory_seeds
+    total_real: 512
+    predictor: G_T
+    outcome: primary_value
+    expected_slope_sign: negative
+  vision_controls:
+    - experiment: flow_mode_validity_control
+      planned_seeds: [11, 23, 37]
+      positive_condition: all_real
+      negative_condition: no_real
+    - experiment: diffusion_mode_validity_control
+      planned_seeds: [11, 23, 37]
+      positive_condition: all_real
+      negative_condition: no_real
+
+studies:
+  - name: gpt_boundary
+    backend: teacher_lm
+    seeds: *estimation_seeds
+    conditions:
+      - name: constant_20pct
+        schedule: {kind: constant_fraction, fraction: 0.2}
+      - name: divergent_log
+        schedule: {kind: log_fraction, power: 1.0, initial_fraction: 0.2}
+      - name: convergent_log_squared
+        schedule: {kind: log_fraction, power: 2.0, initial_fraction: 0.2}
+
+  - name: gpt_same_budget_timing
+    backend: teacher_lm
+    seeds: *estimation_seeds
+    conditions:
+      - name: front_loaded
+        schedule: {kind: front_loaded, total_real: 512, block: true}
+      - name: uniform
+        schedule: {kind: uniform_budget, total_real: 512}
+      - name: back_loaded
+        schedule: {kind: back_loaded, total_real: 512, block: true}
+
+  # The timing-bank extensions were not part of the exploratory plan, so only
+  # the ten unseen confirmatory seeds are needed for these five conditions.
+  - name: gpt_same_budget_timing_extension
+    experiment: gpt_same_budget_timing
+    backend: teacher_lm
+    seeds: *confirmatory_seeds
+    conditions:
+      - name: gradual_front
+        schedule: {kind: front_loaded, total_real: 512}
+      - name: alternating
+        schedule: {kind: alternating, total_real: 512}
+      - name: bursty
+        schedule: {kind: bursty, total_real: 512, period: 5}
+      - name: middle_loaded
+        schedule: {kind: middle_loaded, total_real: 512}
+      - name: gradual_back
+        schedule: {kind: back_loaded, total_real: 512}
+
+  - name: gpt_misspecified
+    backend: teacher_lm
+    seeds: *estimation_seeds
+    overrides:
+      lm:
+        teacher_model: &large_lm
+          n_embd: 256
+          n_layer: 4
+          n_head: 8
+          dropout: 0.0
+        student_model: *small_lm
+      misspecified:
+        enabled: true
+    conditions:
+      - name: constant_20pct
+        schedule: {kind: constant_fraction, fraction: 0.2}
+      - name: convergent_log_squared
+        schedule: {kind: log_fraction, power: 2.0, initial_fraction: 0.2}
+
+  - name: gpt_real_corpus
+    backend: real_corpus_lm
+    seeds: *estimation_seeds
+    conditions:
+      - name: constant_20pct
+        schedule: {kind: constant_fraction, fraction: 0.2}
+      - name: convergent_log_squared
+        schedule: {kind: log_fraction, power: 2.0, initial_fraction: 0.2}
+
+  - name: gpt_model_scale
+    backend: teacher_lm
+    seeds: *estimation_seeds
+    conditions:
+      - name: large_constant
+        schedule: {kind: constant_fraction, fraction: 0.2}
+        overrides:
+          lm: {teacher_model: *large_lm, student_model: *large_lm}
+      - name: large_log_squared
+        schedule: {kind: log_fraction, power: 2.0, initial_fraction: 0.2}
+        overrides:
+          lm: {teacher_model: *large_lm, student_model: *large_lm}
+
+  - name: flow_exact_likelihood
+    backend: flow_teacher
+    seeds: *estimation_seeds
+    conditions:
+      - name: constant_20pct
+        schedule: {kind: constant_fraction, fraction: 0.2}
+      - name: divergent_log
+        schedule: {kind: log_fraction, power: 1.0, initial_fraction: 0.2}
+      - name: convergent_log_squared
+        schedule: {kind: log_fraction, power: 2.0, initial_fraction: 0.2}
+
+  # These are implementation-validity controls, not additional positive-result searches.
+  # The larger per-round data batch gives the all-real condition 10,240 fresh MNIST images.
+  - name: flow_mode_validity_control
+    backend: flow_mode_recovery
+    seeds: [11, 23, 37]
+    batch_size: 512
+    conditions:
+      - name: all_real
+        schedule: {kind: all_real}
+      - name: no_real
+        schedule: {kind: no_real}
+
+  - name: diffusion_mode_validity_control
+    backend: diffusion_mode_recovery
+    seeds: [11, 23, 37]
+    batch_size: 512
+    conditions:
+      - name: all_real
+        schedule: {kind: all_real}
+      - name: no_real
+        schedule: {kind: no_real}

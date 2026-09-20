@@ -289,8 +289,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     generative_analyze.add_argument("--runs", default="runs/generative")
     generative_analyze.add_argument("--output", default="results/generative")
+    generative_analyze.add_argument(
+        "--confirmatory-config",
+        help="Frozen generative YAML containing a confirmatory_analysis specification",
+    )
     generative_analyze.set_defaults(
-        func=lambda args: _print(analyze_generative_runs(args.runs, args.output))
+        func=lambda args: _print(
+            analyze_generative_runs(
+                args.runs,
+                args.output,
+                confirmatory_config=args.confirmatory_config,
+            )
+        )
     )
 
     generative_preflight = subparsers.add_parser(

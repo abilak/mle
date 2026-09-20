@@ -185,6 +185,69 @@ treated raw missing-class probability as monotonically better and therefore rewa
 overshoot. The correction reuses saved per-round metrics and requires no retraining. Exact
 sign-flip p-values were also added in this audit; publications should disclose both changes.
 
+## Frozen confirmatory extension
+
+`configs/generative/confirmatory.yaml` freezes ten new paired seeds, three primary contrasts,
+five secondary robustness contrasts, an eight-condition fixed-budget timing bank, and
+all-real/no-real validity controls for both vision backends. Seeds 11, 23, and 37 were already
+inspected, so they are excluded from confirmatory p-values. The original global defaults
+remain unchanged so their 45 matching completed checkpoints retain their original run IDs
+and can still appear in descriptive pooled figures. Of 257 plan entries, 212 are new.
+
+The three primary contrasts are divergent-log versus log-squared GPT, block-front versus
+block-back timing at exactly 512 real records, and divergent-log versus log-squared exact
+flow. Exact two-sided sign-flip p-values receive Holm correction across this family. The
+secondary robustness family is corrected separately. Confirmatory p-values are withheld
+until every frozen seed in the corresponding family is complete; this prevents optional
+stopping on interim results.
+
+Create the frozen plan once:
+
+```bash
+grounding-mle generative-plan \
+  --config configs/generative/confirmatory.yaml \
+  --output runs/generative_confirmatory_plan.json
+```
+
+Run phases serially on a single GPU. Each phase is restart-safe and reuses completed runs:
+
+```bash
+bash scripts/run_generative_confirmatory.sh core
+bash scripts/run_generative_confirmatory.sh robustness
+bash scripts/run_generative_confirmatory.sh timing
+bash scripts/run_generative_confirmatory.sh vision
+```
+
+The `core` phase adds 90 runs, `robustness` adds 60, the remaining timing-bank schedules add
+50 after core, and vision validity controls add 12. `all` runs those phases in that order.
+Do not use `--no-resume`, change the frozen seeds, or stop after inspecting an interim
+p-value.
+
+Check completion at any time without touching a run:
+
+```bash
+python scripts/generative_plan_status.py \
+  --plan runs/generative_confirmatory_plan.json \
+  --runs runs/generative
+```
+
+Analyze the accumulated original and confirmatory runs together:
+
+```bash
+grounding-mle generative-analyze \
+  --runs runs/generative \
+  --output results/generative_confirmatory \
+  --confirmatory-config configs/generative/confirmatory.yaml
+```
+
+The additional outputs are `confirmatory_contrasts.csv`,
+`confirmatory_timing_by_seed.csv`, `confirmatory_vision_controls.csv`, and
+`confirmatory_analysis.json`. The timing-bank test estimates a KL-versus-`G_T` slope within
+each seed while holding total real and synthetic counts fixed, then applies the exact
+sign-flip test to the ten slopes. Vision controls are validity checks, not searches for a
+positive recursive-training result: an all-real quantitative pass still requires visual
+review of the generated sample grids.
+
 Do not interpret the log/log-squared finite-horizon ordering as an asymptotic theorem for
 neural networks. The corresponding plot is an empirical stress test; the exact theorem
 continues to be claimed only for the regular likelihood classes established in the paper.

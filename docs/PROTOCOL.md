@@ -95,6 +95,16 @@ monotonically higher-is-better, despite the hypothesis above specifying approach
 target. Schema v2 uses absolute target error and adds exact sign-flip p-values. This correction
 does not alter training or raw measurements and must be disclosed in reporting.
 
+The follow-up confirmatory protocol is frozen in `configs/generative/confirmatory.yaml`
+before its ten new seeds are run. Seeds 11, 23, and 37 were already inspected and are
+excluded from confirmatory p-values. Inference uses exact two-sided sign-flip tests and Holm
+correction within the three-test primary family and the separate five-test secondary
+robustness family. Confirmatory inference is suppressed until every planned seed in a family
+is complete. The eight-condition timing bank keeps exactly 512 real and 2,048 synthetic
+records in every schedule and tests within-seed slopes against `G_T`. All other pairwise
+comparisons remain exploratory. Additional seeds must not be added in response to interim
+p-values.
+
 All architectures, step budgets, sample counts, schedules, endpoints, classifier threshold,
 and seeds are fixed in `configs/generative/full.yaml`. The diffusion result is explicitly
 qualitative because denoising score matching is not the paper's MLE setting. Full operational

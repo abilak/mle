@@ -89,6 +89,9 @@ def validate_generative_config(config: Mapping[str, Any]) -> None:
         if not name or name in names:
             raise ValueError("Every generative study needs a unique non-empty name")
         names.add(name)
+        experiment = str(study.get("experiment", name))
+        if not experiment:
+            raise ValueError(f"Study {name} must have a non-empty experiment label")
         backend = str(study.get("backend", config["defaults"].get("backend", "")))
         if backend not in SUPPORTED_GENERATIVE_BACKENDS:
             raise ValueError(f"Unsupported generative backend for {name}: {backend}")
@@ -133,7 +136,7 @@ def _study_defaults(config: Mapping[str, Any], study: Mapping[str, Any]) -> dict
 def plan_generative_config(config: Mapping[str, Any]) -> list[GenerativePlannedRun]:
     planned: list[GenerativePlannedRun] = []
     for study in config["studies"]:
-        experiment = str(study["name"])
+        experiment = str(study.get("experiment", study["name"]))
         resolved_study = _study_defaults(config, study)
         rounds = int(study.get("rounds", resolved_study["rounds"]))
         batch_size = int(study.get("batch_size", resolved_study["batch_size"]))

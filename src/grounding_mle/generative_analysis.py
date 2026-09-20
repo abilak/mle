@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from itertools import combinations, product
 from pathlib import Path
@@ -13,10 +14,11 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import yaml
 from scipy.stats import spearmanr
 
 from .analysis import bootstrap_mean_ci, paired_effect
-from .io import atomic_write_json, read_json, runtime_manifest
+from .io import atomic_write_json, read_json, runtime_manifest, sha256_file
 from .theory import schedule_statistics
 
 
@@ -211,6 +213,406 @@ def _paired_effects(final: pd.DataFrame) -> pd.DataFrame:
                 | effect
             )
     return pd.DataFrame(rows)
+
+
+def _holm_adjusted_pvalues(pvalues: list[float] | np.ndarray) -> np.ndarray:
+    """Return Holm step-down family-wise adjusted p-values in original order."""
+
+    values = np.asarray(pvalues, dtype=float)
+    if values.ndim != 1 or not len(values) or not np.isfinite(values).all():
+        raise ValueError("Holm adjustment requires a non-empty finite p-value vector")
+    if ((values < 0) | (values > 1)).any():
+        raise ValueError("p-values must lie in [0, 1]")
+    order = np.argsort(values, kind="stable")
+    adjusted = np.empty_like(values)
+    running_maximum = 0.0
+    count = len(values)
+    for rank, index in enumerate(order):
+        running_maximum = max(running_maximum, (count - rank) * values[index])
+        adjusted[index] = min(1.0, running_maximum)
+    return adjusted
+
+
+def _observed_favored_condition(
+    left: str,
+    right: str,
+    mean_difference: float,
+    higher_is_better: bool,
+) -> str:
+    if np.isclose(mean_difference, 0.0):
+        return "tie"
+    if (mean_difference > 0) == higher_is_better:
+        return left
+    return right
+
+
+def _json_safe(value: Any) -> Any:
+    """Replace non-finite scalar values with JSON null recursively."""
+
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, np.generic):
+        value = value.item()
+    if isinstance(value, float) and not np.isfinite(value):
+        return None
+    return value
+
+
+def _confirmatory_contrast_table(
+    final: pd.DataFrame, specification: dict[str, Any]
+) -> pd.DataFrame:
+    planned_seeds = tuple(int(value) for value in specification["planned_seeds"])
+    if len(planned_seeds) != len(set(planned_seeds)):
+        raise ValueError("confirmatory_analysis.planned_seeds must be distinct")
+    contrasts = specification.get("contrasts", [])
+    identifiers = [str(row["id"]) for row in contrasts]
+    if not identifiers or len(identifiers) != len(set(identifiers)):
+        raise ValueError("Confirmatory contrasts require unique non-empty ids")
+    rows: list[dict[str, Any]] = []
+    planned_set = set(planned_seeds)
+    for contrast in contrasts:
+        experiment = str(contrast["experiment"])
+        left = str(contrast["left"])
+        right = str(contrast["right"])
+        expected_favored = str(contrast["expected_favored"])
+        if expected_favored not in {left, right}:
+            raise ValueError(
+                f"Expected favored condition for {contrast['id']} must be left or right"
+            )
+        table = final[final["experiment"] == experiment]
+        left_table = table[table["condition"] == left].set_index("seed")
+        right_table = table[table["condition"] == right].set_index("seed")
+        if left_table.index.has_duplicates or right_table.index.has_duplicates:
+            raise ValueError(f"Duplicate seed rows found for contrast {contrast['id']}")
+        left_available = set(int(value) for value in left_table.index) & planned_set
+        right_available = set(int(value) for value in right_table.index) & planned_set
+        common = sorted(left_available & right_available)
+        complete = left_available == planned_set and right_available == planned_set
+        row: dict[str, Any] = {
+            "contrast_id": str(contrast["id"]),
+            "family": str(contrast["family"]),
+            "experiment": experiment,
+            "left": left,
+            "right": right,
+            "expected_favored": expected_favored,
+            "planned_seed_count": len(planned_seeds),
+            "paired_seed_count": len(common),
+            "planned_seeds": ";".join(str(value) for value in planned_seeds),
+            "missing_left_seeds": ";".join(
+                str(value) for value in sorted(planned_set - left_available)
+            ),
+            "missing_right_seeds": ";".join(
+                str(value) for value in sorted(planned_set - right_available)
+            ),
+            "complete": complete,
+        }
+        if common:
+            primary_metrics = set(left_table.loc[common, "primary_metric"]) | set(
+                right_table.loc[common, "primary_metric"]
+            )
+            directions = set(left_table.loc[common, "higher_is_better"]) | set(
+                right_table.loc[common, "higher_is_better"]
+            )
+            if len(primary_metrics) != 1 or len(directions) != 1:
+                raise ValueError(f"Inconsistent endpoint for contrast {contrast['id']}")
+            left_values = left_table.loc[common, "primary_value"].to_numpy(dtype=float)
+            right_values = right_table.loc[common, "primary_value"].to_numpy(dtype=float)
+            differences = left_values - right_values
+            effect = paired_effect(left_values, right_values)
+            higher_is_better = bool(next(iter(directions)))
+            observed_favored = _observed_favored_condition(
+                left,
+                right,
+                effect["paired_mean_difference"],
+                higher_is_better,
+            )
+            nonzero = differences[~np.isclose(differences, 0.0)]
+            row.update(
+                {
+                    "primary_metric": next(iter(primary_metrics)),
+                    "higher_is_better": higher_is_better,
+                    "left_mean": float(left_values.mean()),
+                    "right_mean": float(right_values.mean()),
+                    "observed_favored": observed_favored,
+                    "supports_expected_direction": observed_favored == expected_favored,
+                    "all_nonzero_differences_same_direction": bool(
+                        len(nonzero)
+                        and (np.all(nonzero > 0) or np.all(nonzero < 0))
+                    ),
+                }
+                | effect
+            )
+            row["exact_sign_flip_pvalue"] = (
+                _exact_paired_sign_flip_pvalue(differences)
+                if complete
+                else float("nan")
+            )
+        else:
+            row.update(
+                {
+                    "primary_metric": "",
+                    "higher_is_better": None,
+                    "left_mean": float("nan"),
+                    "right_mean": float("nan"),
+                    "observed_favored": "pending",
+                    "supports_expected_direction": False,
+                    "all_nonzero_differences_same_direction": False,
+                    "paired_mean_difference": float("nan"),
+                    "ci_low": float("nan"),
+                    "ci_high": float("nan"),
+                    "paired_standardized_effect": float("nan"),
+                    "exact_sign_flip_pvalue": float("nan"),
+                }
+            )
+        rows.append(row)
+
+    result = pd.DataFrame(rows)
+    result["holm_adjusted_pvalue"] = float("nan")
+    result["family_complete"] = False
+    alpha = float(specification.get("alpha", 0.05))
+    for family, indices in result.groupby("family").groups.items():
+        family_indices = list(indices)
+        family_complete = bool(result.loc[family_indices, "complete"].all())
+        result.loc[family_indices, "family_complete"] = family_complete
+        if family_complete:
+            result.loc[family_indices, "holm_adjusted_pvalue"] = _holm_adjusted_pvalues(
+                result.loc[family_indices, "exact_sign_flip_pvalue"].to_numpy(dtype=float)
+            )
+        else:
+            result.loc[family_indices, "exact_sign_flip_pvalue"] = float("nan")
+    result["decision"] = "pending"
+    ready = result["family_complete"]
+    supported = result["supports_expected_direction"]
+    rejected = result["holm_adjusted_pvalue"] < alpha
+    result.loc[ready & supported & rejected, "decision"] = "supports_expected_direction"
+    result.loc[ready & ~(supported & rejected), "decision"] = "not_confirmed"
+    return result
+
+
+def _confirmatory_timing_analysis(
+    final: pd.DataFrame, specification: dict[str, Any]
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    experiment = str(specification["experiment"])
+    conditions = [str(value) for value in specification["conditions"]]
+    planned_seeds = [int(value) for value in specification["planned_seeds"]]
+    expected_total = float(specification["total_real"])
+    predictor = str(specification.get("predictor", "G_T"))
+    outcome = str(specification.get("outcome", "primary_value"))
+    rows: list[dict[str, Any]] = []
+    table = final[final["experiment"] == experiment]
+    for seed in planned_seeds:
+        seed_table = table[table["seed"] == seed].set_index("condition")
+        if seed_table.index.has_duplicates:
+            raise ValueError(f"Duplicate timing-bank conditions for seed {seed}")
+        missing = [condition for condition in conditions if condition not in seed_table.index]
+        row: dict[str, Any] = {
+            "seed": seed,
+            "complete": not missing,
+            "missing_conditions": ";".join(missing),
+            "condition_count": len(conditions) - len(missing),
+        }
+        if not missing:
+            selected = seed_table.loc[conditions]
+            totals = selected["total_real"].to_numpy(dtype=float)
+            if not np.allclose(totals, expected_total):
+                raise ValueError(
+                    f"Timing bank seed {seed} does not preserve total_real={expected_total:g}"
+                )
+            x_values = selected[predictor].to_numpy(dtype=float)
+            y_values = selected[outcome].to_numpy(dtype=float)
+            if len(np.unique(x_values)) < 2:
+                raise ValueError("Timing-bank predictor must vary across conditions")
+            correlation = spearmanr(x_values, y_values)
+            row.update(
+                {
+                    "slope": float(np.polyfit(x_values, y_values, 1)[0]),
+                    "spearman_rho": float(correlation.statistic),
+                    "G_T_min": float(x_values.min()),
+                    "G_T_max": float(x_values.max()),
+                    "total_real": expected_total,
+                }
+            )
+        else:
+            row.update(
+                {
+                    "slope": float("nan"),
+                    "spearman_rho": float("nan"),
+                    "G_T_min": float("nan"),
+                    "G_T_max": float("nan"),
+                    "total_real": expected_total,
+                }
+            )
+        rows.append(row)
+    by_seed = pd.DataFrame(rows)
+    complete = bool(by_seed["complete"].all())
+    available_slopes = by_seed.loc[by_seed["complete"], "slope"].to_numpy(dtype=float)
+    available_correlations = by_seed.loc[
+        by_seed["complete"], "spearman_rho"
+    ].to_numpy(dtype=float)
+    if len(available_slopes):
+        mean, low, high = bootstrap_mean_ci(
+            available_slopes, draws=10_000, seed=20260920
+        )
+    else:
+        mean = low = high = float("nan")
+    expected_sign = str(specification.get("expected_slope_sign", "negative"))
+    if expected_sign not in {"negative", "positive"}:
+        raise ValueError("fixed_budget_timing.expected_slope_sign must be negative or positive")
+    supports_direction = bool(
+        np.isfinite(mean)
+        and (
+            (mean < 0 and expected_sign == "negative")
+            or (mean > 0 and expected_sign == "positive")
+        )
+    )
+    exact_pvalue = (
+        _exact_paired_sign_flip_pvalue(available_slopes)
+        if complete
+        else float("nan")
+    )
+    alpha = float(specification.get("alpha", 0.05))
+    if not complete:
+        decision = "pending"
+    elif supports_direction and exact_pvalue < alpha:
+        decision = "supports_expected_direction"
+    else:
+        decision = "not_confirmed"
+    summary = {
+        "experiment": experiment,
+        "conditions": conditions,
+        "planned_seed_count": len(planned_seeds),
+        "complete_seed_count": int(by_seed["complete"].sum()),
+        "complete": complete,
+        "predictor": predictor,
+        "outcome": outcome,
+        "expected_total_real": expected_total,
+        "expected_slope_sign": expected_sign,
+        "mean_within_seed_slope": mean,
+        "slope_ci_low": low,
+        "slope_ci_high": high,
+        "mean_within_seed_spearman_rho": (
+            float(available_correlations.mean())
+            if len(available_correlations)
+            else float("nan")
+        ),
+        "exact_sign_flip_pvalue": exact_pvalue,
+        "decision": decision,
+    }
+    return by_seed, summary
+
+
+def _confirmatory_vision_controls(
+    final: pd.DataFrame, specifications: list[dict[str, Any]]
+) -> pd.DataFrame:
+    rows: list[dict[str, Any]] = []
+    metrics = [
+        "primary_value",
+        "class_kl_to_uniform",
+        "feature_frechet_distance",
+        "class_entropy",
+    ]
+    for specification in specifications:
+        experiment = str(specification["experiment"])
+        planned_seeds = {int(value) for value in specification["planned_seeds"]}
+        positive = str(specification["positive_condition"])
+        negative = str(specification["negative_condition"])
+        table = final[final["experiment"] == experiment]
+        groups = {
+            condition: table[
+                (table["condition"] == condition) & table["seed"].isin(planned_seeds)
+            ]
+            for condition in (positive, negative)
+        }
+        complete = all(set(group["seed"]) == planned_seeds for group in groups.values())
+        row: dict[str, Any] = {
+            "experiment": experiment,
+            "positive_condition": positive,
+            "negative_condition": negative,
+            "planned_seed_count": len(planned_seeds),
+            "positive_seed_count": int(groups[positive]["seed"].nunique()),
+            "negative_seed_count": int(groups[negative]["seed"].nunique()),
+            "complete": complete,
+            "visual_review_required": True,
+        }
+        comparisons = []
+        for metric in metrics:
+            positive_mean = (
+                float(groups[positive][metric].mean())
+                if metric in groups[positive] and not groups[positive].empty
+                else float("nan")
+            )
+            negative_mean = (
+                float(groups[negative][metric].mean())
+                if metric in groups[negative] and not groups[negative].empty
+                else float("nan")
+            )
+            row[f"all_real_{metric}"] = positive_mean
+            row[f"no_real_{metric}"] = negative_mean
+            if metric != "class_entropy" and np.isfinite(positive_mean + negative_mean):
+                comparisons.append(positive_mean < negative_mean)
+        quantitative_pass = bool(complete and comparisons and all(comparisons))
+        row["quantitative_pass"] = quantitative_pass
+        if not complete:
+            row["status"] = "pending"
+        elif quantitative_pass:
+            row["status"] = "quantitative_pass_requires_visual_review"
+        else:
+            row["status"] = "failed_quantitative_control"
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def _analyze_confirmatory(
+    final: pd.DataFrame,
+    config_path: str | Path,
+    output: Path,
+) -> dict[str, Any]:
+    source = Path(config_path).resolve()
+    with source.open(encoding="utf-8") as handle:
+        config = yaml.safe_load(handle) or {}
+    specification = config.get("confirmatory_analysis")
+    if not isinstance(specification, dict):
+        raise ValueError(f"No confirmatory_analysis mapping found in {source}")
+    if not specification.get("frozen_before_new_runs"):
+        raise ValueError("Confirmatory analysis must declare frozen_before_new_runs: true")
+    contrasts = _confirmatory_contrast_table(final, specification)
+    timing_by_seed, timing_summary = _confirmatory_timing_analysis(
+        final, specification["fixed_budget_timing"]
+    )
+    controls = _confirmatory_vision_controls(
+        final, list(specification.get("vision_controls", []))
+    )
+    contrasts.to_csv(output / "confirmatory_contrasts.csv", index=False)
+    timing_by_seed.to_csv(output / "confirmatory_timing_by_seed.csv", index=False)
+    controls.to_csv(output / "confirmatory_vision_controls.csv", index=False)
+    families = {}
+    for family, table in contrasts.groupby("family"):
+        families[str(family)] = {
+            "tests": int(len(table)),
+            "complete": bool(table["family_complete"].all()),
+            "confirmed": int((table["decision"] == "supports_expected_direction").sum()),
+            "pending": int((table["decision"] == "pending").sum()),
+        }
+    manifest = {
+        "kind": "grounding-mle-confirmatory-analysis-v1",
+        "config": str(source),
+        "config_sha256": sha256_file(source),
+        "protocol_version": int(specification.get("version", 1)),
+        "alpha": float(specification.get("alpha", 0.05)),
+        "planned_seeds": [int(value) for value in specification["planned_seeds"]],
+        "families": families,
+        "timing_bank": timing_summary,
+        "vision_controls": json.loads(controls.to_json(orient="records")),
+        "inference_note": (
+            "Confirmatory p-values are withheld until every preregistered seed in a "
+            "contrast family is complete. Holm adjustment is applied within each family."
+        ),
+    }
+    safe_manifest = _json_safe(manifest)
+    atomic_write_json(output / "confirmatory_analysis.json", safe_manifest)
+    return safe_manifest
 
 
 def _schedule_law(final: pd.DataFrame) -> dict[str, Any]:
@@ -425,6 +827,7 @@ def _sample_grids(completed: list[dict[str, Any]], output: Path) -> None:
 def analyze_generative_runs(
     runs_root: str | Path = "runs/generative",
     output_dir: str | Path = "results/generative",
+    confirmatory_config: str | Path | None = None,
 ) -> dict[str, Any]:
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
@@ -447,6 +850,11 @@ def analyze_generative_runs(
     _robustness_figure(final, output)
     _mode_figure(metrics, output)
     _sample_grids(completed, output)
+    confirmatory = (
+        _analyze_confirmatory(final, confirmatory_config, output)
+        if confirmatory_config is not None
+        else None
+    )
     manifest = {
         "kind": "grounding-mle-generative-analysis-v2",
         "completed_runs": int(final["run_id"].nunique()),
@@ -471,10 +879,12 @@ def analyze_generative_runs(
             "effect": "left-minus-right paired mean with percentile bootstrap interval",
             "test": "exact two-sided paired sign-flip randomization test",
             "small_sample_note": (
-                "With three paired seeds, the smallest attainable nonzero two-sided "
-                "sign-flip p-value is 0.25."
+                "For n paired seeds, the smallest attainable nonzero two-sided sign-flip "
+                "p-value is 2/(2**n). Confirmatory inference is reported separately and "
+                "withheld until its frozen seed set is complete."
             ),
         },
+        "confirmatory": confirmatory,
         "schedule_law": law,
         "runtime": runtime_manifest(),
     }

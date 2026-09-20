@@ -9,7 +9,11 @@ import pandas as pd
 import pytest
 
 from grounding_mle.generative_analysis import (
+    _confirmatory_contrast_table,
+    _confirmatory_timing_analysis,
+    _confirmatory_vision_controls,
     _exact_paired_sign_flip_pvalue,
+    _holm_adjusted_pvalues,
     _paired_effects,
     _primary_metrics,
     analyze_generative_runs,
@@ -95,6 +99,183 @@ def test_full_generative_plan_covers_every_requested_family() -> None:
         "diffusion_mode_recovery",
     }
     assert len({run.run_id for run in runs}) == len(runs)
+
+
+def test_confirmatory_plan_reuses_original_runs_and_fixes_timing_budget() -> None:
+    full_runs = plan_generative_config(
+        load_generative_config("configs/generative/full.yaml")
+    )
+    confirmatory_config = load_generative_config(
+        "configs/generative/confirmatory.yaml"
+    )
+    confirmatory_runs = plan_generative_config(confirmatory_config)
+    full_ids = {
+        (run.experiment, run.condition, run.seed): run.run_id for run in full_runs
+    }
+    reused = [
+        run
+        for run in confirmatory_runs
+        if full_ids.get((run.experiment, run.condition, run.seed)) == run.run_id
+    ]
+
+    assert len(confirmatory_runs) == 257
+    assert len(reused) == 45
+    assert len(confirmatory_runs) - len(reused) == 212
+    confirmatory_seeds = set(
+        confirmatory_config["confirmatory_analysis"]["planned_seeds"]
+    )
+    assert {run.seed for run in reused} == {11, 23, 37}
+    assert not ({run.seed for run in reused} & confirmatory_seeds)
+    timing_runs = [
+        run
+        for run in confirmatory_runs
+        if run.experiment == "gpt_same_budget_timing"
+    ]
+    assert len(timing_runs) == 89
+    assert {sum(run.real_counts) for run in timing_runs} == {512}
+    assert {sum(run.synthetic_counts) for run in timing_runs} == {2048}
+
+
+def test_holm_adjustment_and_complete_confirmatory_contrasts() -> None:
+    assert _holm_adjusted_pvalues([0.01, 0.03, 0.02]).tolist() == pytest.approx(
+        [0.03, 0.04, 0.04]
+    )
+    seeds = [41, 53, 67, 79, 83, 97, 109, 127, 139, 151]
+    rows = []
+    for experiment in ("first", "second"):
+        for seed in seeds:
+            for condition, value in (("better", 1.0), ("worse", 2.0)):
+                rows.append(
+                    {
+                        "experiment": experiment,
+                        "condition": condition,
+                        "seed": seed,
+                        "primary_metric": "loss",
+                        "primary_value": value,
+                        "higher_is_better": False,
+                    }
+                )
+    specification = {
+        "alpha": 0.05,
+        "planned_seeds": seeds,
+        "contrasts": [
+            {
+                "id": experiment,
+                "family": "primary",
+                "experiment": experiment,
+                "left": "better",
+                "right": "worse",
+                "expected_favored": "better",
+            }
+            for experiment in ("first", "second")
+        ],
+    }
+
+    result = _confirmatory_contrast_table(pd.DataFrame(rows), specification)
+
+    assert result["complete"].all()
+    assert result["family_complete"].all()
+    assert result["exact_sign_flip_pvalue"].tolist() == pytest.approx(
+        [2 / 2**10, 2 / 2**10]
+    )
+    assert result["holm_adjusted_pvalue"].tolist() == pytest.approx(
+        [4 / 2**10, 4 / 2**10]
+    )
+    assert set(result["decision"]) == {"supports_expected_direction"}
+
+    incomplete = pd.DataFrame(rows)
+    incomplete = incomplete[
+        ~(
+            (incomplete["experiment"] == "second")
+            & (incomplete["condition"] == "worse")
+            & (incomplete["seed"] == 109)
+        )
+    ]
+    pending = _confirmatory_contrast_table(incomplete, specification)
+    assert not pending["family_complete"].any()
+    assert pending["exact_sign_flip_pvalue"].isna().all()
+    assert pending["holm_adjusted_pvalue"].isna().all()
+    assert set(pending["decision"]) == {"pending"}
+
+
+def test_confirmatory_timing_uses_within_seed_fixed_budget_slopes() -> None:
+    seeds = [41, 53, 67, 79, 83, 97, 109, 127, 139, 151]
+    conditions = ["back", "uniform", "front"]
+    rows = []
+    for seed in seeds:
+        for condition, restoring_mass in zip(
+            conditions, (0.2, 0.7, 1.2), strict=True
+        ):
+            rows.append(
+                {
+                    "experiment": "timing",
+                    "condition": condition,
+                    "seed": seed,
+                    "G_T": restoring_mass,
+                    "primary_value": 3.0 - restoring_mass + seed * 1e-6,
+                    "total_real": 512,
+                }
+            )
+    specification = {
+        "experiment": "timing",
+        "conditions": conditions,
+        "planned_seeds": seeds,
+        "total_real": 512,
+        "predictor": "G_T",
+        "outcome": "primary_value",
+        "expected_slope_sign": "negative",
+    }
+
+    by_seed, summary = _confirmatory_timing_analysis(
+        pd.DataFrame(rows), specification
+    )
+
+    assert by_seed["complete"].all()
+    assert by_seed["slope"].tolist() == pytest.approx([-1.0] * 10)
+    assert summary["complete"]
+    assert summary["exact_sign_flip_pvalue"] == pytest.approx(2 / 2**10)
+    assert summary["decision"] == "supports_expected_direction"
+
+
+def test_confirmatory_vision_control_requires_complete_quantitative_recovery() -> None:
+    rows = []
+    for seed in (11, 23, 37):
+        for condition, values in {
+            "all_real": (0.01, 0.02, 3.0, 2.2),
+            "no_real": (0.08, 0.20, 12.0, 1.1),
+        }.items():
+            rows.append(
+                {
+                    "experiment": "vision_control",
+                    "condition": condition,
+                    "seed": seed,
+                    "primary_value": values[0],
+                    "class_kl_to_uniform": values[1],
+                    "feature_frechet_distance": values[2],
+                    "class_entropy": values[3],
+                }
+            )
+    specification = [
+        {
+            "experiment": "vision_control",
+            "planned_seeds": [11, 23, 37],
+            "positive_condition": "all_real",
+            "negative_condition": "no_real",
+        }
+    ]
+
+    result = _confirmatory_vision_controls(pd.DataFrame(rows), specification)
+
+    assert result.loc[0, "complete"]
+    assert result.loc[0, "quantitative_pass"]
+    assert result.loc[0, "visual_review_required"]
+    assert result.loc[0, "status"] == "quantitative_pass_requires_visual_review"
+
+    incomplete = pd.DataFrame(rows[:-1])
+    pending = _confirmatory_vision_controls(incomplete, specification)
+    assert not pending.loc[0, "complete"]
+    assert not pending.loc[0, "quantitative_pass"]
+    assert pending.loc[0, "status"] == "pending"
 
 
 def test_markov_metric_detects_initial_error() -> None:
