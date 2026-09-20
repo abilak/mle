@@ -6,7 +6,9 @@ scientific results.
 
 ## Completed on the implementation host
 
-- All 46 automated tests pass.
+- The automated suite covers the analysis endpoint direction, exact paired sign-flip
+  inference, and missing-class target-distance calculation in addition to the end-to-end
+  experiment checks below.
 - All ten experiment configurations plus the smoke configuration validate.
 - The full materialized dry plan contains 485 unique run IDs. Every schedule has the
   required length, nonnegative integer counts, and no run asks for more than the 4,001

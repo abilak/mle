@@ -23,8 +23,8 @@ across three paired seeds):
 | `gpt_real_corpus` | TinyStories as the real source | Does the result survive without a synthetic in-family truth? | Held-out real cross-entropy/perplexity |
 | `gpt_model_scale` | Approximately 7M and 16M GPTs | Is the comparison a one-size artifact? | Key-schedule KL at both sizes |
 | `flow_exact_likelihood` | Frozen RealNVP teacher/student | Does the schedule effect replicate in a second exact-likelihood neural family? | Monte Carlo exact flow KL |
-| `flow_mode_recovery` | RealNVP initialized without one MNIST class | Does a missing mode return? | Fixed-classifier missing-class mass, class KL, feature distance |
-| `diffusion_mode_recovery` | Tiny unconditional DDPM initialized without one class | Does the qualitative mode result survive beyond MLE? | The same mode and feature metrics plus sample grids |
+| `flow_mode_recovery` | RealNVP initialized without one MNIST class | Does a missing mode return? | Absolute error from the balanced missing-class target; raw mass, class KL, and feature distance are diagnostics |
+| `diffusion_mode_recovery` | Tiny unconditional DDPM initialized without one class | Does the qualitative mode result survive beyond MLE? | The same target-error and diagnostic metrics plus sample grids |
 
 Every Transformer condition also records teacher and student cross-entropy, perplexity,
 unigram KL, bigram KL, unique-bigram fraction, repetition rate, standard errors, and decoded
@@ -167,10 +167,24 @@ grounding-mle generative-analyze \
 ```
 
 The command writes long-form and final CSVs, bootstrap condition intervals, paired-seed
-effects, the `G_T` rank-correlation result, five publication-oriented figure families,
-qualitative image grids, and a runtime manifest.
+effects with exact two-sided sign-flip randomization p-values, the `G_T` rank-correlation
+result, five publication-oriented figure families, qualitative image grids, and a runtime
+manifest. With the preregistered three paired seeds, the smallest attainable nonzero
+two-sided sign-flip p-value is 0.25; bootstrap intervals must not be presented as substitutes
+for that exact small-sample test.
+
+For mode recovery, the primary endpoint is the absolute distance between the generated
+missing-class probability and its balanced target of 0.10, so both failure to recover and
+overshoot are penalized. Raw missing-class probability, class KL, classifier feature
+distance, entropy, and sample grids remain necessary diagnostics. Classifier probabilities
+on visibly out-of-distribution samples should not be interpreted without those diagnostics.
+
+This is a post-run correction recorded as analysis schema v2. The original hypothesis said
+that probability should approach the balanced target, but the v1 implementation mistakenly
+treated raw missing-class probability as monotonically better and therefore rewarded severe
+overshoot. The correction reuses saved per-round metrics and requires no retraining. Exact
+sign-flip p-values were also added in this audit; publications should disclose both changes.
 
 Do not interpret the log/log-squared finite-horizon ordering as an asymptotic theorem for
 neural networks. The corresponding plot is an empirical stress test; the exact theorem
 continues to be claimed only for the regular likelihood classes established in the paper.
-

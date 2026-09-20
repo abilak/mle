@@ -488,10 +488,16 @@ def class_distribution_metrics(labels: np.ndarray, missing_class: int = 8) -> di
     probabilities = counts / max(1, counts.sum())
     uniform = np.full(10, 0.1)
     kl = float(np.sum(uniform * (np.log(uniform) - np.log(probabilities + 1e-12))))
+    target_probability = float(uniform[missing_class])
+    missing_class_probability = float(probabilities[missing_class])
     return {
         "class_probabilities": probabilities.tolist(),
         "class_kl_to_uniform": kl,
-        "missing_class_probability": float(probabilities[missing_class]),
+        "missing_class_probability": missing_class_probability,
+        "missing_class_target_probability": target_probability,
+        "missing_class_absolute_error": abs(
+            missing_class_probability - target_probability
+        ),
         "class_entropy": float(-np.sum(probabilities * np.log(probabilities + 1e-12))),
     }
 

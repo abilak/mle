@@ -5,9 +5,15 @@ import json
 import struct
 
 import numpy as np
+import pandas as pd
 import pytest
 
-from grounding_mle.generative_analysis import analyze_generative_runs
+from grounding_mle.generative_analysis import (
+    _exact_paired_sign_flip_pvalue,
+    _paired_effects,
+    _primary_metrics,
+    analyze_generative_runs,
+)
 from grounding_mle.generative_analytic import (
     initial_transition,
     markov_metrics,
@@ -22,7 +28,11 @@ from grounding_mle.generative_planning import (
 )
 from grounding_mle.generative_runner import run_generative_planned
 from grounding_mle.generative_schedules import materialize_generative_schedule
-from grounding_mle.generative_vision import _read_idx_images, _read_idx_labels
+from grounding_mle.generative_vision import (
+    _read_idx_images,
+    _read_idx_labels,
+    class_distribution_metrics,
+)
 
 
 def test_log_schedule_starts_at_anchor_and_decays() -> None:
@@ -158,7 +168,55 @@ def test_analytic_results_feed_analysis(tmp_path) -> None:
     assert not manifest["schedule_law"]["skipped"]
     assert (tmp_path / "results" / "trajectory_metrics.csv").exists()
     saved = json.loads((tmp_path / "results" / "analysis_manifest.json").read_text())
-    assert saved["kind"] == "grounding-mle-generative-analysis-v1"
+    assert saved["kind"] == "grounding-mle-generative-analysis-v2"
+    assert saved["analysis_revision"]["post_run_correction"]
+    assert not saved["analysis_revision"]["training_rerun_required"]
+
+
+def test_mode_recovery_primary_is_distance_from_balanced_target() -> None:
+    name, value, higher_is_better = _primary_metrics(
+        "flow_mode_recovery",
+        "flow_mode_recovery",
+        {"missing_class_probability": 0.82},
+    )
+
+    assert name == "missing_class_absolute_error"
+    assert value == pytest.approx(0.72)
+    assert not higher_is_better
+
+
+def test_exact_paired_inference_and_direction_are_reported() -> None:
+    rows = []
+    for seed, left, right in zip(
+        (11, 23, 37), (1.0, 1.2, 1.4), (2.0, 2.2, 2.4), strict=True
+    ):
+        for condition, value in (("left", left), ("right", right)):
+            rows.append(
+                {
+                    "experiment": "paired",
+                    "condition": condition,
+                    "seed": seed,
+                    "primary_metric": "loss",
+                    "primary_value": value,
+                    "higher_is_better": False,
+                }
+            )
+
+    effects = _paired_effects(pd.DataFrame(rows))
+
+    assert _exact_paired_sign_flip_pvalue(np.asarray([-1.0, -1.0, -1.0])) == 0.25
+    assert effects.loc[0, "exact_sign_flip_pvalue"] == 0.25
+    assert effects.loc[0, "favored_condition"] == "left"
+    assert bool(effects.loc[0, "all_nonzero_differences_same_direction"])
+
+
+def test_class_distribution_metrics_reports_target_distance() -> None:
+    labels = np.repeat(np.arange(10), 2)
+    metrics = class_distribution_metrics(labels, missing_class=8)
+
+    assert metrics["missing_class_probability"] == pytest.approx(0.1)
+    assert metrics["missing_class_target_probability"] == pytest.approx(0.1)
+    assert metrics["missing_class_absolute_error"] == pytest.approx(0.0)
 
 
 def test_idx_vision_loader_parses_images_and_labels(tmp_path) -> None:

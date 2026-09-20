@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from itertools import combinations
+from itertools import combinations, product
 from pathlib import Path
 from typing import Any
 
@@ -28,7 +28,9 @@ def _primary_metrics(
     if backend == "real_corpus_lm":
         return "real_cross_entropy", float(metrics["real_cross_entropy"]), False
     if backend == "flow_mode_recovery" or backend == "diffusion_mode_recovery":
-        return "missing_class_probability", float(metrics["missing_class_probability"]), True
+        probability = float(metrics["missing_class_probability"])
+        target = float(metrics.get("missing_class_target_probability", 0.1))
+        return "missing_class_absolute_error", abs(probability - target), False
     if backend == "flow_teacher":
         return "teacher_student_kl", float(metrics["teacher_student_kl"]), False
     return (
@@ -74,6 +76,9 @@ def collect_generative_results(
                 "cumulative_synthetic": sum(actual_synthetic[:round_number]),
             }
             row.update(point["metrics"])
+            if name == "missing_class_absolute_error":
+                row.setdefault("missing_class_target_probability", 0.1)
+                row["missing_class_absolute_error"] = primary
             if round_number:
                 row.update(
                     schedule_statistics(
@@ -89,6 +94,11 @@ def _condition_summary(final: pd.DataFrame) -> pd.DataFrame:
     for (experiment, condition, metric), group in final.groupby(
         ["experiment", "condition", "primary_metric"]
     ):
+        directions = group["higher_is_better"].dropna().unique()
+        if len(directions) != 1:
+            raise ValueError(
+                f"Inconsistent optimization direction for {experiment}/{condition}/{metric}"
+            )
         mean, low, high = bootstrap_mean_ci(
             group["primary_value"], draws=10_000, seed=20260919
         )
@@ -97,15 +107,42 @@ def _condition_summary(final: pd.DataFrame) -> pd.DataFrame:
                 "experiment": experiment,
                 "condition": condition,
                 "primary_metric": metric,
+                "higher_is_better": bool(directions[0]),
                 "mean": mean,
                 "ci_low": low,
                 "ci_high": high,
                 "seeds": int(group["seed"].nunique()),
                 "G_T": float(group["G_T"].mean()) if "G_T" in group else float("nan"),
-                "total_real": float(group["total_real"].mean()) if "total_real" in group else float("nan"),
+                "total_real": (
+                    float(group["total_real"].mean())
+                    if "total_real" in group
+                    else float("nan")
+                ),
             }
         )
     return pd.DataFrame(rows)
+
+
+def _exact_paired_sign_flip_pvalue(
+    differences: np.ndarray, *, maximum_exact_pairs: int = 20
+) -> float:
+    """Return the exact two-sided randomization p-value for paired differences."""
+
+    values = np.asarray(differences, dtype=float)
+    values = values[np.isfinite(values)]
+    if not len(values):
+        raise ValueError("At least one finite paired difference is required")
+    if len(values) > maximum_exact_pairs:
+        return float("nan")
+    observed = abs(float(values.mean()))
+    tolerance = np.finfo(float).eps * max(1.0, observed) * 16
+    extreme = 0
+    permutations = 0
+    for signs in product((-1.0, 1.0), repeat=len(values)):
+        statistic = abs(float(np.mean(values * np.asarray(signs))))
+        extreme += statistic >= observed - tolerance
+        permutations += 1
+    return float(extreme / permutations)
 
 
 def _paired_effects(final: pd.DataFrame) -> pd.DataFrame:
@@ -118,16 +155,58 @@ def _paired_effects(final: pd.DataFrame) -> pd.DataFrame:
             common = sorted(set(left_table.index) & set(right_table.index))
             if not common:
                 continue
-            effect = paired_effect(
-                left_table.loc[common, "primary_value"],
-                right_table.loc[common, "primary_value"],
+            primary_metrics = set(left_table.loc[common, "primary_metric"]) | set(
+                right_table.loc[common, "primary_metric"]
             )
+            if len(primary_metrics) != 1:
+                raise ValueError(
+                    f"Cannot compare different primary metrics for {experiment}: "
+                    f"{left} versus {right}"
+                )
+            directions = set(left_table.loc[common, "higher_is_better"]) | set(
+                right_table.loc[common, "higher_is_better"]
+            )
+            if len(directions) != 1:
+                raise ValueError(
+                    f"Cannot compare inconsistent optimization directions for {experiment}: "
+                    f"{left} versus {right}"
+                )
+            left_values = left_table.loc[common, "primary_value"].to_numpy(dtype=float)
+            right_values = right_table.loc[common, "primary_value"].to_numpy(dtype=float)
+            differences = left_values - right_values
+            effect = paired_effect(
+                left_values,
+                right_values,
+            )
+            higher_is_better = bool(next(iter(directions)))
+            mean_difference = effect["paired_mean_difference"]
+            if np.isclose(mean_difference, 0.0):
+                favored = "tie"
+            elif (mean_difference > 0) == higher_is_better:
+                favored = left
+            else:
+                favored = right
+            nonzero = differences[~np.isclose(differences, 0.0)]
             rows.append(
                 {
                     "experiment": experiment,
                     "left": left,
                     "right": right,
                     "seeds": len(common),
+                    "primary_metric": next(iter(primary_metrics)),
+                    "higher_is_better": higher_is_better,
+                    "paired_difference_definition": "left_minus_right",
+                    "favored_condition": favored,
+                    "exact_sign_flip_pvalue": _exact_paired_sign_flip_pvalue(differences),
+                    "sign_flip_inference": (
+                        "exact_two_sided"
+                        if len(differences) <= 20
+                        else "not_computed_more_than_20_pairs"
+                    ),
+                    "all_nonzero_differences_same_direction": bool(
+                        len(nonzero)
+                        and (np.all(nonzero > 0) or np.all(nonzero < 0))
+                    ),
                 }
                 | effect
             )
@@ -136,7 +215,7 @@ def _paired_effects(final: pd.DataFrame) -> pd.DataFrame:
 
 def _schedule_law(final: pd.DataFrame) -> dict[str, Any]:
     table = final[final["experiment"] == "gpt_schedule_sweep"].copy()
-    if len(table) < 3:
+    if table["condition"].nunique() < 3:
         return {"skipped": True, "reason": "fewer than three completed sweep conditions"}
     aggregated = table.groupby("condition", as_index=False).agg(
         final_kl=("primary_value", "mean"),
@@ -146,10 +225,19 @@ def _schedule_law(final: pd.DataFrame) -> dict[str, Any]:
         mean_batch_real_fraction=("mean_batch_real_fraction", "first"),
     )
     correlation = spearmanr(aggregated["G_T"], aggregated["final_kl"])
+    budget_correlation = spearmanr(aggregated["total_real"], aggregated["final_kl"])
     return {
         "skipped": False,
         "spearman_G_T_vs_final_kl": float(correlation.statistic),
         "pvalue": float(correlation.pvalue),
+        "nominal_pvalue": float(correlation.pvalue),
+        "spearman_total_real_vs_final_kl": float(budget_correlation.statistic),
+        "total_real_nominal_pvalue": float(budget_correlation.pvalue),
+        "inference_note": (
+            "Condition-level Spearman p-values are descriptive because conditions share "
+            "seeds and total-real budgets vary. Use matched-budget paired contrasts for "
+            "timing claims."
+        ),
         "conditions": aggregated.to_dict(orient="records"),
     }
 
@@ -160,11 +248,17 @@ def _trajectory_figure(metrics: pd.DataFrame, output: Path) -> None:
     if selected.empty:
         return
     experiments = [value for value in studies if value in set(selected["experiment"])]
-    fig, axes = plt.subplots(1, len(experiments), figsize=(7 * len(experiments), 4.8), squeeze=False)
+    fig, axes = plt.subplots(
+        1, len(experiments), figsize=(7 * len(experiments), 4.8), squeeze=False
+    )
     for axis, experiment in zip(axes[0], experiments, strict=True):
         table = selected[selected["experiment"] == experiment]
         for condition, group in table.groupby("condition"):
-            summary = group.groupby("round")["primary_value"].agg(["mean", "sem"]).reset_index()
+            summary = (
+                group.groupby("round")["primary_value"]
+                .agg(["mean", "sem"])
+                .reset_index()
+            )
             axis.plot(summary["round"], summary["mean"], marker="o", label=condition)
             lower = np.maximum(0, summary["mean"] - 1.96 * summary["sem"].fillna(0))
             upper = summary["mean"] + 1.96 * summary["sem"].fillna(0)
@@ -176,7 +270,11 @@ def _trajectory_figure(metrics: pd.DataFrame, output: Path) -> None:
         )
         axis.grid(alpha=0.25)
         axis.legend(fontsize=8)
-    fig.savefig(output / "figure_G1_exact_likelihood_trajectories.png", dpi=220, bbox_inches="tight")
+    fig.savefig(
+        output / "figure_G1_exact_likelihood_trajectories.png",
+        dpi=220,
+        bbox_inches="tight",
+    )
     fig.savefig(output / "figure_G1_exact_likelihood_trajectories.svg", bbox_inches="tight")
     plt.close(fig)
 
@@ -188,7 +286,13 @@ def _schedule_scatter(law: dict[str, Any], output: Path) -> None:
     fig, axis = plt.subplots(figsize=(7.2, 5.1))
     axis.scatter(table["G_T"], table["final_kl"], s=55)
     for row in table.itertuples():
-        axis.annotate(row.condition, (row.G_T, row.final_kl), fontsize=7, xytext=(3, 3), textcoords="offset points")
+        axis.annotate(
+            row.condition,
+            (row.G_T, row.final_kl),
+            fontsize=7,
+            xytext=(3, 3),
+            textcoords="offset points",
+        )
     axis.set(
         xlabel=r"cumulative restoring mass $G_T$",
         ylabel="final teacher-to-student KL",
@@ -206,9 +310,14 @@ def _timing_figure(final: pd.DataFrame, output: Path) -> None:
         return
     summary = _condition_summary(table).sort_values("G_T")
     fig, axis = plt.subplots(figsize=(7.2, 5))
-    errors = np.vstack([summary["mean"] - summary["ci_low"], summary["ci_high"] - summary["mean"]])
+    errors = np.vstack(
+        [summary["mean"] - summary["ci_low"], summary["ci_high"] - summary["mean"]]
+    )
     axis.bar(summary["condition"], summary["mean"], yerr=errors, capsize=4)
-    axis.set(ylabel="final teacher-to-student KL", title="Same real-data budget, different timing")
+    axis.set(
+        ylabel="final teacher-to-student KL",
+        title="Same real-data budget, different timing",
+    )
     axis.tick_params(axis="x", rotation=20)
     axis.grid(axis="y", alpha=0.25)
     fig.savefig(output / "figure_G3_same_budget_timing.png", dpi=220, bbox_inches="tight")
@@ -221,7 +330,9 @@ def _robustness_figure(final: pd.DataFrame, output: Path) -> None:
     available = [value for value in experiments if value in set(final["experiment"])]
     if not available:
         return
-    fig, axes = plt.subplots(1, len(available), figsize=(6.2 * len(available), 4.8), squeeze=False)
+    fig, axes = plt.subplots(
+        1, len(available), figsize=(6.2 * len(available), 4.8), squeeze=False
+    )
     for axis, experiment in zip(axes[0], available, strict=True):
         table = final[final["experiment"] == experiment]
         summary = _condition_summary(table)
@@ -239,18 +350,39 @@ def _mode_figure(metrics: pd.DataFrame, output: Path) -> None:
     available = [value for value in experiments if value in set(metrics["experiment"])]
     if not available:
         return
-    fig, axes = plt.subplots(1, len(available), figsize=(7 * len(available), 4.8), squeeze=False)
+    fig, axes = plt.subplots(
+        1, len(available), figsize=(7 * len(available), 4.8), squeeze=False
+    )
     for axis, experiment in zip(axes[0], available, strict=True):
         table = metrics[metrics["experiment"] == experiment]
         for condition, group in table.groupby("condition"):
-            summary = group.groupby("round")["missing_class_probability"].agg(["mean", "sem"]).reset_index()
+            summary = (
+                group.groupby("round")["missing_class_probability"]
+                .agg(["mean", "sem"])
+                .reset_index()
+            )
             axis.plot(summary["round"], summary["mean"], marker="o", label=condition)
-        axis.axhline(0.1, linestyle="--", color="black", linewidth=1, label="balanced target")
+        target = 0.1
+        finite_probabilities = pd.to_numeric(
+            table["missing_class_probability"], errors="coerce"
+        ).replace([np.inf, -np.inf], np.nan).dropna()
+        upper_limit = 0.16
+        if not finite_probabilities.empty:
+            upper_limit = min(
+                1.0, max(upper_limit, float(finite_probabilities.max()) * 1.08)
+            )
+        axis.axhline(
+            target,
+            linestyle="--",
+            color="black",
+            linewidth=1,
+            label="balanced target",
+        )
         axis.set(
             xlabel="recursive round",
             ylabel="generated missing-class probability",
-            title=experiment.replace("_", " "),
-            ylim=(0, 0.16),
+            title=f"{experiment.replace('_', ' ')}\n(primary: absolute distance from 0.10)",
+            ylim=(0, upper_limit),
         )
         axis.grid(alpha=0.25)
         axis.legend(fontsize=8)
@@ -316,10 +448,33 @@ def analyze_generative_runs(
     _mode_figure(metrics, output)
     _sample_grids(completed, output)
     manifest = {
-        "kind": "grounding-mle-generative-analysis-v1",
+        "kind": "grounding-mle-generative-analysis-v2",
         "completed_runs": int(final["run_id"].nunique()),
         "experiments": sorted(final["experiment"].unique().tolist()),
         "rows": int(len(metrics)),
+        "primary_endpoints": {
+            "vision_mode_recovery": (
+                "absolute error between generated missing-class probability and the "
+                "balanced target probability (0.10); lower is better"
+            )
+        },
+        "analysis_revision": {
+            "version": 2,
+            "post_run_correction": True,
+            "reason": (
+                "Version 1 treated missing-class probability as monotonically better, "
+                "which incorrectly rewarded overshoot beyond the balanced 0.10 target."
+            ),
+            "training_rerun_required": False,
+        },
+        "paired_inference": {
+            "effect": "left-minus-right paired mean with percentile bootstrap interval",
+            "test": "exact two-sided paired sign-flip randomization test",
+            "small_sample_note": (
+                "With three paired seeds, the smallest attainable nonzero two-sided "
+                "sign-flip p-value is 0.25."
+            ),
+        },
         "schedule_law": law,
         "runtime": runtime_manifest(),
     }

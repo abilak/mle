@@ -80,12 +80,20 @@ The extension fixes the following empirical hypotheses before GPU execution:
 4. The qualitative ordering is retained under a smaller misspecified student, direct
    TinyStories grounding, a second model size, and an exact-likelihood flow.
 5. The missing-class probability approaches the balanced target more closely under stronger
-   grounding schedules for both the flow and diffusion stress tests.
+   grounding schedules for both the flow and diffusion stress tests. The primary quantity
+   is absolute error from the balanced target, so overshoot is not counted as recovery.
 
 Primary endpoints are teacher-to-student sequence KL per token for the well-specified GPT,
 excess teacher cross-entropy for misspecification, held-out TinyStories cross-entropy for the
-real-corpus study, exact teacher/student KL for the flow, and generated missing-class mass for
-mode recovery. Three seeds (`11`, `23`, `37`) are paired across every full condition.
+real-corpus study, exact teacher/student KL for the flow, and absolute error between generated
+missing-class mass and its balanced target for mode recovery. Three seeds (`11`, `23`, `37`)
+are paired across every full condition. Paired tables report exact two-sided sign-flip tests;
+with three pairs their smallest attainable nonzero p-value is 0.25.
+
+Post-run analysis correction: schema v1 mistakenly encoded missing-class probability as
+monotonically higher-is-better, despite the hypothesis above specifying approach to the 0.10
+target. Schema v2 uses absolute target error and adds exact sign-flip p-values. This correction
+does not alter training or raw measurements and must be disclosed in reporting.
 
 All architectures, step budgets, sample counts, schedules, endpoints, classifier threshold,
 and seeds are fixed in `configs/generative/full.yaml`. The diffusion result is explicitly
