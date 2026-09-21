@@ -36,6 +36,9 @@ from grounding_mle.generative_vision import (
     _read_idx_images,
     _read_idx_labels,
     class_distribution_metrics,
+    flatten_image_batch,
+    frechet_feature_distance,
+    inverse_logit,
 )
 
 
@@ -398,6 +401,25 @@ def test_class_distribution_metrics_reports_target_distance() -> None:
     assert metrics["missing_class_probability"] == pytest.approx(0.1)
     assert metrics["missing_class_target_probability"] == pytest.approx(0.1)
     assert metrics["missing_class_absolute_error"] == pytest.approx(0.0)
+
+
+def test_empty_vision_batches_keep_their_feature_dimensions() -> None:
+    images = np.empty((0, 1, 28, 28), dtype=np.float32)
+
+    flattened = flatten_image_batch(images)
+
+    assert flattened.shape == (0, 784)
+    assert inverse_logit(flattened).shape == (0, 1, 28, 28)
+
+
+def test_frechet_feature_distance_handles_singular_covariance() -> None:
+    reference = np.arange(24, dtype=np.float64).reshape(6, 4)
+    collapsed = np.ones((6, 4), dtype=np.float64)
+
+    assert frechet_feature_distance(reference, reference) == pytest.approx(
+        0.0, abs=1e-8
+    )
+    assert np.isfinite(frechet_feature_distance(reference, collapsed))
 
 
 def test_idx_vision_loader_parses_images_and_labels(tmp_path) -> None:

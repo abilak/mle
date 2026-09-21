@@ -183,9 +183,25 @@ def logit_transform(images: np.ndarray, alpha: float = 1e-4) -> np.ndarray:
     return np.log(values) - np.log1p(-values)
 
 
+def flatten_image_batch(values: np.ndarray) -> np.ndarray:
+    """Flatten a batch while preserving a valid feature width for empty batches."""
+
+    array = np.asarray(values)
+    if array.ndim < 2:
+        raise ValueError("An image batch must include a batch and feature dimension")
+    feature_count = int(np.prod(array.shape[1:]))
+    if feature_count <= 0:
+        raise ValueError("An image batch must have at least one feature")
+    return array.reshape((len(array), feature_count))
+
+
 def inverse_logit(values: np.ndarray) -> np.ndarray:
     clipped = np.clip(values, -20, 20)
-    return (1 / (1 + np.exp(-clipped))).reshape((-1, 1, 28, 28)).astype(np.float32)
+    expected = 28 * 28
+    flat = flatten_image_batch(clipped)
+    if flat.shape[1] != expected:
+        raise ValueError(f"Expected {expected} flow features, received {flat.shape[1]}")
+    return (1 / (1 + np.exp(-flat))).reshape((len(flat), 1, 28, 28)).astype(np.float32)
 
 
 def _flow_classes() -> tuple[type, type]:
@@ -305,7 +321,7 @@ def train_flow(
     steps = int(training.get("max_steps", 500))
     batch_size = int(training.get("batch_size", 128))
     losses: list[float] = []
-    flat = transformed_images.reshape((len(transformed_images), -1))
+    flat = flatten_image_batch(transformed_images)
     for _ in range(steps):
         indices = rng.integers(0, len(flat), size=batch_size)
         batch = torch.as_tensor(np.asarray(flat[indices]), dtype=torch.float32, device=device)
@@ -351,10 +367,12 @@ def sample_flow(checkpoint: str | Path, count: int, seed: int, batch_size: int =
 def flow_log_probabilities(
     checkpoint: str | Path, values: np.ndarray, batch_size: int = 256
 ) -> np.ndarray:
+    flat = flatten_image_batch(values)
+    if not len(flat):
+        return np.empty(0, dtype=np.float64)
     torch, _ = _dependencies()
     device = _device()
     model = load_flow(checkpoint).to(device).eval()
-    flat = values.reshape((len(values), -1))
     chunks = []
     with torch.inference_mode():
         for start in range(0, len(flat), batch_size):
@@ -503,19 +521,46 @@ def class_distribution_metrics(labels: np.ndarray, missing_class: int = 8) -> di
 
 
 def frechet_feature_distance(reference: np.ndarray, candidate: np.ndarray) -> float:
-    from scipy.linalg import sqrtm
+    import warnings
+
+    from scipy.linalg import LinAlgWarning, sqrtm
+
+    reference = np.asarray(reference, dtype=np.float64)
+    candidate = np.asarray(candidate, dtype=np.float64)
+    if reference.ndim != 2 or candidate.ndim != 2:
+        raise ValueError("Feature arrays must be two-dimensional")
+    if reference.shape[1] != candidate.shape[1]:
+        raise ValueError("Reference and candidate features must have equal widths")
+    if len(reference) < 2 or len(candidate) < 2:
+        raise ValueError("Fréchet distance requires at least two samples per set")
 
     reference_mean, candidate_mean = reference.mean(axis=0), candidate.mean(axis=0)
-    reference_cov = np.cov(reference, rowvar=False)
-    candidate_cov = np.cov(candidate, rowvar=False)
-    product_root = sqrtm(reference_cov @ candidate_cov)
-    if np.iscomplexobj(product_root):
-        product_root = product_root.real
+    reference_cov = np.atleast_2d(np.cov(reference, rowvar=False))
+    candidate_cov = np.atleast_2d(np.cov(candidate, rowvar=False))
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", LinAlgWarning)
+        covariance_root = sqrtm(reference_cov @ candidate_cov)
+    if not np.isfinite(covariance_root).all():
+        dimension = reference_cov.shape[0]
+        scale = max(
+            float(np.trace(reference_cov)) / dimension,
+            float(np.trace(candidate_cov)) / dimension,
+            1.0,
+        )
+        jitter = np.eye(dimension) * (1e-6 * scale)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", LinAlgWarning)
+            covariance_root = sqrtm(
+                (reference_cov + jitter) @ (candidate_cov + jitter)
+            )
+    if np.iscomplexobj(covariance_root):
+        covariance_root = covariance_root.real
     difference = reference_mean - candidate_mean
-    return float(
+    distance = float(
         difference @ difference
-        + np.trace(reference_cov + candidate_cov - 2 * product_root)
+        + np.trace(reference_cov + candidate_cov - 2 * covariance_root)
     )
+    return max(0.0, distance)
 
 
 def _diffusion_class() -> type:

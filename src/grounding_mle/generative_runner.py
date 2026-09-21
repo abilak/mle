@@ -632,6 +632,7 @@ def _run_vision(planned: GenerativePlannedRun, run_dir: Path, state: dict[str, A
         classify_images,
         ensure_flow_teacher,
         ensure_mnist_classifier,
+        flatten_image_batch,
         load_mnist_arrays,
         logit_transform,
         sample_diffusion,
@@ -741,7 +742,7 @@ def _run_vision(planned: GenerativePlannedRun, run_dir: Path, state: dict[str, A
             )
             real_images = images[indices]
             if model_kind == "flow":
-                real = logit_transform(real_images).reshape((len(real_images), -1))
+                real = flatten_image_batch(logit_transform(real_images))
                 synthetic = sample_flow(
                     current, synthetic_count, derived_seed(planned.seed, "flow-mode-synthetic", round_number)
                 )
