@@ -42,7 +42,7 @@ from grounding_mle.generative_vision import (
     inverse_logit,
     preprocess_flow_images,
 )
-from scripts.check_vision_repair import evaluate_repair
+from grounding_mle.generative_vision_repair import evaluate_repair
 
 
 def test_log_schedule_starts_at_anchor_and_decays() -> None:
