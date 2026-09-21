@@ -507,7 +507,12 @@ def _ensure_flow_initial(
     images: np.ndarray,
     labels: np.ndarray,
 ) -> Path:
-    from .generative_vision import balanced_indices, logit_transform, sample_flow, train_flow
+    from .generative_vision import (
+        balanced_indices,
+        preprocess_flow_images,
+        sample_flow,
+        train_flow,
+    )
 
     config = planned.config
     vision = config["vision"]
@@ -520,6 +525,9 @@ def _ensure_flow_initial(
         "seed": planned.seed,
         "missing_class": int(vision.get("missing_class", 8)),
     }
+    preprocessing = dict(vision.get("flow_preprocessing", {}))
+    if preprocessing:
+        identity["preprocessing"] = preprocessing
     target = _artifact_root(config) / "initial_flows" / stable_hash(identity, 16)
     with exclusive_file_lock(target.with_suffix(".lock")):
         if (target / "model.pt").exists():
@@ -535,7 +543,11 @@ def _ensure_flow_initial(
             indices = balanced_indices(
                 allowed_labels, count, derived_seed(planned.seed, "initial-flow-real")
             )
-            transformed = logit_transform(allowed_images[indices])
+            transformed = preprocess_flow_images(
+                allowed_images[indices],
+                vision,
+                derived_seed(planned.seed, "initial-flow-dequantization"),
+            )
         train_flow(
             transformed_images=transformed,
             output_dir=target,
@@ -612,7 +624,9 @@ def _evaluate_mode_model(
 
     count = int(config["evaluation"].get("vision_diagnostic_samples", 2000))
     if kind == "flow":
-        images = inverse_logit(sample_flow(checkpoint, count, seed))
+        preprocessing = dict(config["vision"].get("flow_preprocessing", {}))
+        alpha = float(preprocessing.get("logit_alpha", 0.0))
+        images = inverse_logit(sample_flow(checkpoint, count, seed), alpha=alpha)
     else:
         images = sample_diffusion(checkpoint, count, seed)
     labels, features = classify_images(classifier, images)
@@ -632,9 +646,8 @@ def _run_vision(planned: GenerativePlannedRun, run_dir: Path, state: dict[str, A
         classify_images,
         ensure_flow_teacher,
         ensure_mnist_classifier,
-        flatten_image_batch,
         load_mnist_arrays,
-        logit_transform,
+        preprocess_flow_images,
         sample_diffusion,
         sample_flow,
         train_diffusion,
@@ -742,7 +755,15 @@ def _run_vision(planned: GenerativePlannedRun, run_dir: Path, state: dict[str, A
             )
             real_images = images[indices]
             if model_kind == "flow":
-                real = flatten_image_batch(logit_transform(real_images))
+                real = preprocess_flow_images(
+                    real_images,
+                    config["vision"],
+                    derived_seed(
+                        planned.seed,
+                        "vision-flow-dequantization",
+                        round_number,
+                    ),
+                )
                 synthetic = sample_flow(
                     current, synthetic_count, derived_seed(planned.seed, "flow-mode-synthetic", round_number)
                 )

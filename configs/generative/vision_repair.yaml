@@ -1,0 +1,95 @@
+project:
+  # This is a post-hoc implementation repair, not a new confirmatory analysis.
+  name: neural_generative_vision_repair_v1
+  artifact_root: artifacts/generative
+
+data:
+  vision_dataset: MNIST
+  vision_data_dir: data/generative/vision
+
+defaults:
+  backend: flow_mode_recovery
+  # A one-round all-real/no-real intervention is a backend validity check. It is
+  # intentionally not another recursive schedule study.
+  rounds: 1
+  batch_size: 10000
+  seeds: [211, 223, 227]
+  evaluation:
+    vision_diagnostic_samples: 2000
+    test_seed: 20260920
+  vision:
+    missing_class: 8
+    initial_examples: 10000
+    classifier_seed: 20260921
+    classifier_steps: 1500
+    classifier_batch_size: 128
+    classifier_min_accuracy: 0.98
+    flow_model:
+      architecture: conv
+      dimension: 784
+      image_shape: [1, 28, 28]
+      coupling_channels: 32
+      layers: 8
+    flow_preprocessing:
+      dequantize: true
+      logit_alpha: 0.01
+    diffusion_model:
+      architecture: conv
+      channels: 64
+      depth: 8
+      time_dim: 64
+      diffusion_steps: 100
+      noise_schedule: cosine
+      cosine_s: 0.008
+      require_near_pure_noise: true
+    initial_training:
+      max_steps: 4000
+      batch_size: 128
+      learning_rate: 0.0002
+      weight_decay: 0.0
+    round_training:
+      max_steps: 4000
+      batch_size: 128
+      learning_rate: 0.0002
+      weight_decay: 0.0
+
+# These gates prevent a relative improvement on globally invalid samples from
+# being reported as a successful repair. Visual review remains mandatory.
+repair_analysis:
+  posthoc_exploratory: true
+  planned_seeds: [211, 223, 227]
+  positive_condition: all_real
+  negative_condition: no_real
+  absolute_gates:
+    all_real_primary_mean_max: 0.05
+    all_real_primary_seed_max: 0.10
+    all_real_class_kl_mean_max: 0.35
+    all_real_class_entropy_mean_min: 1.90
+  require_each_seed_primary_improvement: true
+
+studies:
+  - name: flow_mode_recovery
+    backend: flow_mode_recovery
+    conditions: &validity_conditions
+      - name: all_real
+        schedule: {kind: all_real}
+      - name: no_real
+        schedule: {kind: no_real}
+
+  - name: diffusion_mode_recovery
+    backend: diffusion_mode_recovery
+    overrides:
+      vision:
+        initial_training:
+          max_steps: 5000
+          batch_size: 128
+          learning_rate: 0.0002
+          weight_decay: 0.0
+          ema_decay: 0.999
+        round_training:
+          max_steps: 5000
+          batch_size: 128
+          learning_rate: 0.0002
+          weight_decay: 0.0
+          ema_decay: 0.999
+    conditions: *validity_conditions

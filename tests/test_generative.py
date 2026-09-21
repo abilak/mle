@@ -36,10 +36,13 @@ from grounding_mle.generative_vision import (
     _read_idx_images,
     _read_idx_labels,
     class_distribution_metrics,
+    diffusion_beta_values,
     flatten_image_batch,
     frechet_feature_distance,
     inverse_logit,
+    preprocess_flow_images,
 )
+from scripts.check_vision_repair import evaluate_repair
 
 
 def test_log_schedule_starts_at_anchor_and_decays() -> None:
@@ -102,6 +105,28 @@ def test_full_generative_plan_covers_every_requested_family() -> None:
         "diffusion_mode_recovery",
     }
     assert len({run.run_id for run in runs}) == len(runs)
+
+
+def test_vision_repair_plan_is_separate_and_uses_fixed_backends() -> None:
+    config = load_generative_config("configs/generative/vision_repair.yaml")
+    runs = plan_generative_config(config)
+
+    assert len(runs) == 12
+    assert {run.experiment for run in runs} == {
+        "flow_mode_recovery",
+        "diffusion_mode_recovery",
+    }
+    assert {run.condition for run in runs} == {"all_real", "no_real"}
+    assert {run.seed for run in runs} == {211, 223, 227}
+    assert {len(run.real_counts) for run in runs} == {1}
+    flow = next(run for run in runs if run.backend == "flow_mode_recovery")
+    diffusion = next(
+        run for run in runs if run.backend == "diffusion_mode_recovery"
+    )
+    assert flow.config["vision"]["flow_preprocessing"]["dequantize"]
+    assert flow.config["vision"]["flow_model"]["architecture"] == "conv"
+    assert diffusion.config["vision"]["diffusion_model"]["noise_schedule"] == "cosine"
+    assert diffusion.config["vision"]["diffusion_model"]["architecture"] == "conv"
 
 
 def test_confirmatory_plan_reuses_original_runs_and_fixes_timing_budget() -> None:
@@ -281,6 +306,59 @@ def test_confirmatory_vision_control_requires_complete_quantitative_recovery() -
     assert pending.loc[0, "status"] == "pending"
 
 
+def test_vision_repair_gate_requires_absolute_and_relative_validity(tmp_path) -> None:
+    rows = []
+    for experiment in ("flow_mode_recovery", "diffusion_mode_recovery"):
+        for seed in (211, 223, 227):
+            for condition, values in {
+                "all_real": (0.02, 0.08, 4.0, 2.15),
+                "no_real": (0.09, 0.70, 20.0, 1.50),
+            }.items():
+                rows.append(
+                    {
+                        "experiment": experiment,
+                        "condition": condition,
+                        "seed": seed,
+                        "primary_value": values[0],
+                        "class_kl_to_uniform": values[1],
+                        "feature_frechet_distance": values[2],
+                        "class_entropy": values[3],
+                    }
+                )
+    results = tmp_path / "results"
+    results.mkdir()
+    table = pd.DataFrame(rows)
+    table.to_csv(results / "final_metrics.csv", index=False)
+    specification = {
+        "posthoc_exploratory": True,
+        "planned_seeds": [211, 223, 227],
+        "positive_condition": "all_real",
+        "negative_condition": "no_real",
+        "absolute_gates": {
+            "all_real_primary_mean_max": 0.05,
+            "all_real_primary_seed_max": 0.10,
+            "all_real_class_kl_mean_max": 0.35,
+            "all_real_class_entropy_mean_min": 1.90,
+        },
+        "require_each_seed_primary_improvement": True,
+    }
+
+    passing = evaluate_repair(results, specification)
+    assert passing["quantitative_pass"]
+    assert passing["visual_review_required"]
+
+    table.loc[
+        (table["experiment"] == "flow_mode_recovery")
+        & (table["condition"] == "all_real")
+        & (table["seed"] == 211),
+        "primary_value",
+    ] = 0.2
+    table.to_csv(results / "final_metrics.csv", index=False)
+    failing = evaluate_repair(results, specification)
+    assert not failing["quantitative_pass"]
+    assert failing["status"] == "failed_quality_gate"
+
+
 def test_markov_metric_detects_initial_error() -> None:
     teacher = teacher_transition(8, 7)
     exact = markov_metrics(teacher, teacher)
@@ -412,6 +490,34 @@ def test_empty_vision_batches_keep_their_feature_dimensions() -> None:
     assert inverse_logit(flattened).shape == (0, 1, 28, 28)
 
 
+def test_flow_preprocessing_is_seeded_and_invertible() -> None:
+    images = np.zeros((2, 1, 28, 28), dtype=np.float32)
+    specification = {
+        "flow_preprocessing": {"dequantize": True, "logit_alpha": 0.01}
+    }
+
+    first = preprocess_flow_images(images, specification, seed=17)
+    repeated = preprocess_flow_images(images, specification, seed=17)
+    different = preprocess_flow_images(images, specification, seed=18)
+    restored = inverse_logit(first, alpha=0.01)
+    empty = preprocess_flow_images(images[:0], specification, seed=17)
+
+    assert first.shape == (2, 784)
+    assert np.array_equal(first, repeated)
+    assert not np.array_equal(first, different)
+    assert restored.shape == images.shape
+    assert restored.min() >= 0 and restored.max() <= 1 / 255
+    assert empty.shape == (0, 784)
+
+
+def test_cosine_diffusion_schedule_reaches_the_sampling_prior() -> None:
+    linear = diffusion_beta_values(50, schedule="linear")
+    cosine = diffusion_beta_values(50, schedule="cosine")
+
+    assert np.prod(1 - linear) == pytest.approx(0.6029516, rel=1e-5)
+    assert np.prod(1 - cosine) < 1e-3
+
+
 def test_frechet_feature_distance_handles_singular_covariance() -> None:
     reference = np.arange(24, dtype=np.float64).reshape(6, 4)
     collapsed = np.ones((6, 4), dtype=np.float64)
@@ -527,6 +633,36 @@ def test_tiny_flow_train_sample_and_score(tmp_path) -> None:
     assert np.isfinite(scores).all()
 
 
+def test_tiny_convolutional_flow_train_sample_and_score(tmp_path) -> None:
+    pytest.importorskip("torch")
+    from grounding_mle.generative_vision import (
+        flow_log_probabilities,
+        sample_flow,
+        train_flow,
+    )
+
+    values = np.random.default_rng(19).normal(size=(4, 784)).astype("float32")
+    checkpoint = tmp_path / "convolutional-flow"
+    train_flow(
+        transformed_images=values,
+        output_dir=checkpoint,
+        specification={
+            "architecture": "conv",
+            "dimension": 784,
+            "image_shape": [1, 28, 28],
+            "coupling_channels": 4,
+            "layers": 2,
+        },
+        training={"max_steps": 1, "batch_size": 2},
+        seed=20,
+    )
+    samples = sample_flow(checkpoint, 2, seed=21)
+    scores = flow_log_probabilities(checkpoint, samples)
+
+    assert samples.shape == (2, 784)
+    assert np.isfinite(scores).all()
+
+
 def test_tiny_diffusion_train_and_sample(tmp_path) -> None:
     pytest.importorskip("torch")
     from grounding_mle.generative_vision import sample_diffusion, train_diffusion
@@ -544,3 +680,33 @@ def test_tiny_diffusion_train_and_sample(tmp_path) -> None:
     assert samples.shape == (2, 1, 28, 28)
     assert np.isfinite(samples).all()
     assert samples.min() >= 0 and samples.max() <= 1
+
+
+def test_tiny_convolutional_diffusion_uses_cosine_schedule_and_ema(tmp_path) -> None:
+    pytest.importorskip("torch")
+    from grounding_mle.generative_vision import sample_diffusion, train_diffusion
+
+    images = np.random.default_rng(16).random((4, 1, 28, 28), dtype=np.float32)
+    checkpoint = tmp_path / "convolutional-diffusion"
+    summary = train_diffusion(
+        images=images,
+        output_dir=checkpoint,
+        specification={
+            "architecture": "conv",
+            "channels": 4,
+            "depth": 1,
+            "time_dim": 4,
+            "diffusion_steps": 3,
+            "noise_schedule": "cosine",
+            "require_near_pure_noise": True,
+        },
+        training={"max_steps": 1, "batch_size": 2, "ema_decay": 0.5},
+        seed=17,
+    )
+    samples = sample_diffusion(checkpoint, count=2, seed=18, batch_size=2)
+
+    assert summary["model"]["architecture"] == "conv"
+    assert summary["model"]["terminal_signal"] < 1e-3
+    assert summary["ema_decay"] == 0.5
+    assert samples.shape == (2, 1, 28, 28)
+    assert np.isfinite(samples).all()

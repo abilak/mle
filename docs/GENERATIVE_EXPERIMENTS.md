@@ -251,3 +251,56 @@ review of the generated sample grids.
 Do not interpret the log/log-squared finite-horizon ordering as an asymptotic theorem for
 neural networks. The corresponding plot is an empirical stress test; the exact theorem
 continues to be claimed only for the regular likelihood classes established in the paper.
+
+## Post-hoc vision backend repair
+
+The original all-real/no-real vision controls failed model-validity review. The flow's
+all-real condition sometimes improved relative metrics, but its samples were blurry and its
+generated missing-class probability was far from the balanced target. The diffusion samples
+were noise and the all-real condition did not beat no-real. Do not report either original
+vision control as positive evidence.
+
+The failures had identifiable implementation and modeling causes:
+
+- The 50-step linear diffusion schedule ended with `alpha_bar_T` near 0.603. Training
+  therefore never presented nearly pure noise, even though sampling started from pure
+  Gaussian noise. The repair uses a cosine schedule whose terminal signal is below 0.001.
+- The original denoiser was a fully connected MLP over 784 pixels. The repair uses a
+  convolutional residual denoiser, exponential moving-average weights, and a larger training
+  budget.
+- The image flow applied an extreme deterministic logit transform directly to discrete,
+  nearly binary pixels. The repair uniformly dequantizes pixels, uses a less extreme logit
+  boundary, and replaces the flattened coupling networks with image-aware checkerboard
+  convolutional couplings.
+- A digit classifier can be confidently wrong on noise or other out-of-distribution images.
+  The repair therefore requires absolute class-balance and entropy gates, relative
+  all-real/no-real improvements, feature-distance improvement, and manual sample-grid review.
+
+The repair is isolated in `configs/generative/vision_repair.yaml`, uses three fresh seeds,
+and writes to separate run/result directories. It is a post-hoc exploratory backend check,
+not a replacement confirmatory analysis. It uses one large all-real/no-real intervention
+rather than another 20-round recursive sweep because the question is whether the generators
+are valid at all.
+
+Run it only if a vision appendix or cross-objective stress test is useful:
+
+```bash
+bash scripts/run_generative_vision_repair.sh all
+```
+
+The command is resumable. Its final checker exits unsuccessfully unless both backends pass
+the predeclared relative and absolute quantitative gates. Even after a quantitative pass,
+inspect these files before accepting the repair:
+
+```text
+results/generative_vision_repair/samples_flow_mode_recovery_all_real.png
+results/generative_vision_repair/samples_flow_mode_recovery_no_real.png
+results/generative_vision_repair/samples_diffusion_mode_recovery_all_real.png
+results/generative_vision_repair/samples_diffusion_mode_recovery_no_real.png
+```
+
+Use `flow`, `diffusion`, `status`, or `analyze` instead of `all` to run or inspect one phase.
+The exact-likelihood flow experiment already supplies the continuous regular-MLE extension
+needed by the main argument. Diffusion is score matching rather than MLE, and raw-MNIST flow
+mode recovery is only a qualitative model check. The main paper therefore does not require
+either repaired vision result.

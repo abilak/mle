@@ -25,6 +25,11 @@ scientific results.
   an optimizer step, sampling, and likelihood scoring. A real tiny DDPM completed an
   optimizer step and reverse-diffusion sampling. These were implementation checks, not
   scientific experiment results.
+- The post-hoc vision repair has unit coverage for deterministic uniform dequantization,
+  correct inverse-logit scaling, a cosine diffusion schedule that reaches the pure-noise
+  sampling prior, and an actual convolutional-denoiser/EMA train-load-sample cycle. These
+  checks validate execution; the GPU repair suite must still pass its quantitative gates and
+  manual sample-grid review before its outputs are described as credible.
 - APPS verification fixtures cover both `class Solution` call-based tasks with JSON-encoded
   arguments and stdin tasks whose inputs/outputs are stored as line arrays.
 - All four full paper-scale simulation groups completed with seed `20260821`, producing

@@ -109,3 +109,11 @@ All architectures, step budgets, sample counts, schedules, endpoints, classifier
 and seeds are fixed in `configs/generative/full.yaml`. The diffusion result is explicitly
 qualitative because denoising score matching is not the paper's MLE setting. Full operational
 details are in `docs/GENERATIVE_EXPERIMENTS.md`.
+
+Post-run validity disposition: the original flow and diffusion mode-recovery controls did not
+produce credible image samples and must not be used as positive evidence. A corrected backend
+check is specified separately in `configs/generative/vision_repair.yaml`; because it was
+designed after inspecting the failed controls, it is explicitly exploratory. It cannot alter
+the frozen confirmatory decisions. The theorem-facing evidence remains the analytic studies
+and exact-likelihood flow, while the neural language-model results remain empirical stress
+tests.
