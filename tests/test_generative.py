@@ -346,6 +346,7 @@ def test_vision_repair_gate_requires_absolute_and_relative_validity(tmp_path) ->
     passing = evaluate_repair(results, specification)
     assert passing["quantitative_pass"]
     assert passing["visual_review_required"]
+    assert json.loads(json.dumps(passing)) == passing
 
     table.loc[
         (table["experiment"] == "flow_mode_recovery")

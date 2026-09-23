@@ -73,25 +73,29 @@ def evaluate_repair(
                 for condition in (positive, negative)
             }
             if metric in LOWER_IS_BETTER:
-                relative_checks[metric] = means[metric][positive] < means[metric][negative]
+                relative_checks[metric] = bool(
+                    means[metric][positive] < means[metric][negative]
+                )
             else:
-                relative_checks[metric] = means[metric][positive] > means[metric][negative]
+                relative_checks[metric] = bool(
+                    means[metric][positive] > means[metric][negative]
+                )
 
         gates = specification["absolute_gates"]
         absolute_checks = {
-            "all_real_primary_mean": (
+            "all_real_primary_mean": bool(
                 means["primary_value"][positive]
                 <= float(gates["all_real_primary_mean_max"])
             ),
-            "all_real_primary_each_seed": (
+            "all_real_primary_each_seed": bool(
                 pd.to_numeric(groups[positive]["primary_value"]).max()
                 <= float(gates["all_real_primary_seed_max"])
             ),
-            "all_real_class_kl_mean": (
+            "all_real_class_kl_mean": bool(
                 means["class_kl_to_uniform"][positive]
                 <= float(gates["all_real_class_kl_mean_max"])
             ),
-            "all_real_class_entropy_mean": (
+            "all_real_class_entropy_mean": bool(
                 means["class_entropy"][positive]
                 >= float(gates["all_real_class_entropy_mean_min"])
             ),
